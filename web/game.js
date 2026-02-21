@@ -11,6 +11,7 @@ const MAX_PARTICLES = 650;
 const PRUNE_MARGIN_ROWS = 16;
 const HIT_COOLDOWN = 0.19;
 const MAX_IMPACTS = 14;
+const MAX_SLASH_MARKS = 18;
 
 let blocks = [];
 let particles = [];
@@ -20,6 +21,16 @@ function compactInPlace(arr, keep) {
   for (let r = 0; r < arr.length; r++) {
     const item = arr[r];
     if (keep(item)) arr[w++] = item;
+  }
+  arr.length = w;
+}
+
+function decayAndCompactInPlace(arr, dt, lifeKey = 'life') {
+  let w = 0;
+  for (let r = 0; r < arr.length; r++) {
+    const item = arr[r];
+    item[lifeKey] -= dt;
+    if (item[lifeKey] > 0) arr[w++] = item;
   }
   arr.length = w;
 }
@@ -33,6 +44,7 @@ let hitPulse = 0;
 let hazardPulse = 0;
 let lastHit = null;
 let impactBursts = [];
+let slashMarks = [];
 let hitCooldown = 0;
 let hitstop = 0;
 let recoilX = 0;
@@ -40,6 +52,8 @@ let recoilY = 0;
 let wasGrounded = false;
 let generatedMaxRow = 0;
 let landingPulse = 0;
+let fallStress = 0;
+let airRumble = 0;
 
 const player = {
   x: W * 0.5,
@@ -60,12 +74,15 @@ function reset() {
   camBob = 0;
   t = 0;
   impactBursts = [];
+  slashMarks = [];
   hitCooldown = 0;
   hitstop = 0;
   recoilX = 0;
   recoilY = 0;
   wasGrounded = false;
   landingPulse = 0;
+  fallStress = 0;
+  airRumble = 0;
   generatedMaxRow = 259;
   for (let r = 0; r < 260; r++) addRow(r);
 }
@@ -152,6 +169,21 @@ function spawnImpactBurst(x, y, type, power = 1) {
   }
 }
 
+function spawnSlashMark(x, y, ang, power = 1, strong = 0) {
+  slashMarks.push({
+    x,
+    y,
+    ang,
+    power,
+    strong,
+    life: 0.14 + Math.min(0.08, power * 0.03),
+    maxLife: 0.14 + Math.min(0.08, power * 0.03),
+  });
+  if (slashMarks.length > MAX_SLASH_MARKS) {
+    slashMarks.splice(0, slashMarks.length - MAX_SLASH_MARKS);
+  }
+}
+
 function autoHit() {
   const head = pickaxeHeadPos();
   const radius = BLOCK * 0.85;
@@ -228,6 +260,7 @@ function autoHit() {
     recoilY -= 1.4 + strongestImpact;
     player.trail.push({ x: head.x, y: head.y, life: 0.12 });
     if (player.trail.length > 8) player.trail.shift();
+    comboPulse = Math.min(1, comboPulse + Math.min(0.34, hitCount * 0.08));
   }
 }
 function update(dt) {
@@ -261,7 +294,15 @@ function update(dt) {
   const dropFactor = Math.max(0, 1 - support / 5);
   const gravity = 120 + dropFactor * 230;
   const terminal = 84 + dropFactor * 180;
-  camVel = Math.min(terminal, camVel + gravity * simDt);
+  const preBrakeVel = Math.min(terminal, camVel + gravity * simDt);
+  camVel = preBrakeVel;
+
+  // 공중 낙하 누적 압력(빠르게 떨어질수록 불안정 + 착지 강도 누적)
+  if (!grounded) {
+    const stressGain = Math.max(0, (camVel - 58) / 185);
+    fallStress = Math.min(1, fallStress + stressGain * simDt * 2.4);
+    airRumble = Math.max(airRumble, stressGain * 0.85);
+  }
 
   // 지지층을 밟고 있을 때는 낙하속도를 추가 감쇠해 “붙잡히는” 느낌 강화
   if (grounded) {
@@ -269,17 +310,22 @@ function update(dt) {
     camVel = Math.max(26, camVel - brake * simDt);
   }
 
-  // 공중 -> 지면 전환 시 짧은 착지 임팩트
-  if (grounded && !wasGrounded && camVel > 46) {
-    const thud = Math.min(1, (camVel - 40) / 80);
-    camBob += 14 + thud * 24;
-    shake = Math.max(shake, 3 + thud * 5);
-    landingPulse = Math.max(landingPulse, 0.26 + thud * 0.12);
-    spawnDebris(player.x, H * 0.66, 'dust', 0.75 + thud * 0.55, {
+  // 공중 -> 지면 전환 시 짧은 착지 임팩트 (브레이크 적용 전 속도로 계산)
+  if (grounded && !wasGrounded && preBrakeVel > 44) {
+    const thud = Math.min(1, (preBrakeVel - 38) / 84);
+    const charged = Math.min(1, thud * 0.75 + fallStress * 0.65);
+    camBob += 16 + charged * 30;
+    camVel = Math.max(28, camVel - (8 + charged * 22));
+    shake = Math.max(shake, 3 + charged * 7);
+    landingPulse = Math.max(landingPulse, 0.28 + charged * 0.16);
+    recoilY += 1.5 + charged * 3.8;
+    comboPulse = Math.min(1, comboPulse + charged * 0.4);
+    spawnDebris(player.x, H * 0.66, 'dust', 0.78 + charged * 0.7, {
       baseAngle: Math.PI * 0.5,
       spread: Math.PI * 0.7,
       downBoost: 20,
     });
+    fallStress *= 0.35;
   }
   wasGrounded = grounded;
 
@@ -299,8 +345,8 @@ function update(dt) {
   hitPulse = Math.max(0, hitPulse - simDt * 4.5);
   hazardPulse = Math.max(0, hazardPulse - simDt * 3.5);
   landingPulse = Math.max(0, landingPulse - simDt * 3.2);
-  for (const tr of player.trail) tr.life -= simDt;
-  compactInPlace(player.trail, (tr) => tr.life > 0);
+  comboPulse = Math.max(0, comboPulse - simDt * 1.8);
+  decayAndCompactInPlace(player.trail, simDt);
 
   recoilX *= Math.pow(0.0008, simDt);
   recoilY *= Math.pow(0.0008, simDt);
@@ -315,8 +361,7 @@ function update(dt) {
     if (lastHit.life <= 0) lastHit = null;
   }
 
-  for (const ib of impactBursts) ib.life -= simDt;
-  impactBursts = impactBursts.filter((ib) => ib.life > 0);
+  decayAndCompactInPlace(impactBursts, simDt);
 
   for (const p of particles) {
     p.life -= simDt;
@@ -402,7 +447,7 @@ function drawPickaxe(ox, oy) {
 
   // 손잡이 외곽(실루엣 강화)
   ctx.strokeStyle = '#1b110b';
-  ctx.lineWidth = 15;
+  ctx.lineWidth = 15 + comboPulse * 2.2;
   ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.moveTo(hx, hy);
@@ -416,6 +461,16 @@ function drawPickaxe(ox, oy) {
   ctx.moveTo(hx, hy);
   ctx.lineTo(tx, ty);
   ctx.stroke();
+
+  // 타격 리듬에 반응하는 림 라이트
+  if (comboPulse > 0.01) {
+    ctx.strokeStyle = `rgba(255, 224, 140, ${0.12 + comboPulse * 0.35})`;
+    ctx.lineWidth = 4 + comboPulse * 1.5;
+    ctx.beginPath();
+    ctx.moveTo(hx, hy);
+    ctx.lineTo(tx, ty);
+    ctx.stroke();
+  }
 
   const headX = x + Math.cos(ang) * len * 0.42;
   const headY = y + Math.sin(ang) * len * 0.42;
@@ -636,6 +691,13 @@ function draw() {
     lg.addColorStop(1, `rgba(0,0,0,${landingPulse * 0.22})`);
     ctx.fillStyle = lg;
     ctx.fillRect(0, 0, W, H);
+  }
+
+  // 연타 성공 시 화면 가장자리 미세 펄스
+  if (comboPulse > 0.02) {
+    ctx.strokeStyle = `rgba(255, 214, 120, ${comboPulse * 0.45})`;
+    ctx.lineWidth = 3 + comboPulse * 2;
+    ctx.strokeRect(10, 10, W - 20, H - 20);
   }
 
   // 기본 비네트로 중심부 시각적 대비 강화
