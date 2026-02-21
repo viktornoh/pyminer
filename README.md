@@ -38,3 +38,8 @@ python src/main.py
 ## 설정
 `default.config.json` 기반으로 첫 실행 시 `config.json` 자동 생성.
 원하는 밸런스는 `config.json`에서 조정.
+
+## 문서
+- 실행 스펙: `docs/implementation-spec-v2.md`
+- 리뷰 게이트: `docs/review-gate.md`
+- 서브에이전트 브리프 템플릿: `docs/subagent-brief-template.md`
