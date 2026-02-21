@@ -45,8 +45,12 @@ class Game:
         self.player_x = self.w // 2
         self.player_y = int(self.h * 0.42)
         self.player_radius = cfg["PLAYER_RADIUS"]
+        self.pickaxe_scale = cfg.get("PICKAXE_SCALE", 1.6)
+        self.top_clear_rows = cfg.get("TOP_CLEAR_ROWS", 2)
+        self.auto_fall_mul = cfg.get("AUTO_FALL_MUL", 0.55)
+        self.gravity_mul = cfg.get("GRAVITY_MUL", 0.022)
         self.player_vx = 0.0
-        self.player_vy = 210.0
+        self.player_vy = cfg.get("PLAYER_START_FALL_SPEED", 130.0)
         self.move_dir = 0
 
         self.camera_y = 0.0
@@ -92,9 +96,15 @@ class Game:
 
         self.start_at = time.time()
 
+    def get_pickaxe_radius(self) -> float:
+        return max(self.player_radius, self.block_size * 0.45 * self.pickaxe_scale) * self.size_mul
+
     def generate_rows(self, start_row: int, row_count: int):
         cols = self.w // self.block_size
         for row in range(start_row, start_row + row_count):
+            if row < self.top_clear_rows:
+                self.last_generated_row = row
+                continue
             for col in range(cols):
                 roll = random.random()
                 if roll < 0.20:
@@ -229,7 +239,7 @@ class Game:
 
     def handle_collisions(self):
         world_py = self.player_y + self.camera_y
-        pr = self.player_radius * self.size_mul
+        pr = self.get_pickaxe_radius()
         now = time.time()
         kept: list[Block] = []
 
@@ -243,7 +253,7 @@ class Game:
             nx, ny, penetration, impact = hit
             self.player_x += nx * penetration
             world_py += ny * penetration
-            self.player_x = max(20, min(self.w - 20, self.player_x))
+            self.player_x = max(pr, min(self.w - pr, self.player_x))
 
             vn = self.player_vx * nx + self.player_vy * ny
             if vn < 0:
@@ -328,13 +338,14 @@ class Game:
         blend = min(1.0, self.air_control * dt)
         self.player_vx += (target_vx - self.player_vx) * blend
 
-        self.player_vy += self.cfg["GRAVITY"] * dt * 0.045
-        self.player_vy = min(self.max_fall_speed, self.player_vy)
+        self.player_vy += self.cfg["GRAVITY"] * dt * self.gravity_mul
+        self.player_vy = min(self.max_fall_speed * 0.72, self.player_vy)
 
         self.player_x += self.player_vx * dt
-        self.player_x = max(20, min(self.w - 20, self.player_x))
+        pr = self.get_pickaxe_radius()
+        self.player_x = max(pr, min(self.w - pr, self.player_x))
 
-        self.camera_y += self.player_vy * dt * self.speed_mul
+        self.camera_y += self.player_vy * dt * self.speed_mul * self.auto_fall_mul
         self.depth = max(0, int(self.camera_y / self.block_size))
 
         target_last = int((self.camera_y + self.h * 2) / self.block_size)
@@ -374,15 +385,33 @@ class Game:
             pygame.draw.rect(self.screen, color, (x, sy, self.block_size - 2, self.block_size - 2), border_radius=6)
 
         px, py = self.player_x + ox, int(self.player_y) + oy
-        pr = int(self.player_radius * self.size_mul)
-        player_color = (220, 190, 90) if time.time() >= self.player_invuln_until or int(time.time() * 20) % 2 == 0 else (255, 130, 130)
-        pygame.draw.circle(self.screen, player_color, (px, py), pr)
-        lean = max(-7, min(7, int(self.player_vx * 0.03)))
-        pygame.draw.line(self.screen, (145, 103, 63), (px - 4 + lean // 2, py + pr), (px + 4 + lean, py + pr + 20), 6)
-        pygame.draw.polygon(self.screen, (190, 210, 230), [(px - pr + lean, py), (px + pr + lean, py), (px + lean // 2, py - pr - 8)])
+        pr = int(self.get_pickaxe_radius())
+        metal_color = (195, 215, 236) if time.time() >= self.player_invuln_until or int(time.time() * 20) % 2 == 0 else (255, 140, 140)
+        handle_color = (138, 98, 58)
+        lean = max(-10, min(10, int(self.player_vx * 0.04)))
+
+        handle_start = (px - pr // 2 + lean, py + pr // 2)
+        handle_end = (px + pr // 2 + lean, py - pr // 2)
+        pygame.draw.line(self.screen, handle_color, handle_start, handle_end, max(8, pr // 3))
+
+        head_center = (px + pr // 2 + lean, py - pr // 2)
+        blade = [
+            (head_center[0] - pr // 5, head_center[1] - pr // 3),
+            (head_center[0] + pr, head_center[1] - pr // 6),
+            (head_center[0] + pr + pr // 5, head_center[1] + pr // 6),
+            (head_center[0], head_center[1] + pr // 2),
+        ]
+        pick = [
+            (head_center[0] - pr // 3, head_center[1] - pr // 5),
+            (head_center[0] - pr - pr // 5, head_center[1] - pr // 2),
+            (head_center[0] - pr // 2, head_center[1] + pr // 3),
+        ]
+        pygame.draw.polygon(self.screen, metal_color, blade)
+        pygame.draw.polygon(self.screen, metal_color, pick)
+        pygame.draw.circle(self.screen, (160, 170, 185), head_center, max(4, pr // 7))
 
         if self.shield:
-            pygame.draw.circle(self.screen, (110, 230, 255), (px, py), pr + 7, 2)
+            pygame.draw.circle(self.screen, (110, 230, 255), (px, py), pr + 10, 2)
 
         for p in self.particles:
             alpha = max(30, int(255 * p.life * 2))
