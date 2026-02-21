@@ -175,13 +175,24 @@ function drawPickaxe(ox, oy) {
   const s = player.size;
   const x = player.x + ox;
   const y = player.y + oy;
-  const len = s * 0.76;
+  const len = s * 0.82;
   const ang = (player.face === 1 ? -0.30 : Math.PI + 0.30) + player.swing * 0.72 * player.face;
 
-  const hx = x - Math.cos(ang) * len * 0.45;
-  const hy = y - Math.sin(ang) * len * 0.45;
-  const tx = x + Math.cos(ang) * len * 0.45;
-  const ty = y + Math.sin(ang) * len * 0.45;
+  const hx = x - Math.cos(ang) * len * 0.48;
+  const hy = y - Math.sin(ang) * len * 0.48;
+  const tx = x + Math.cos(ang) * len * 0.48;
+  const ty = y + Math.sin(ang) * len * 0.48;
+
+  // 잔상(헤드 끝 위주)
+  for (let i = player.trail.length - 1; i >= 0; i--) {
+    const tr = player.trail[i];
+    ctx.globalAlpha = tr.life * 3;
+    ctx.fillStyle = '#8dd8ff';
+    ctx.beginPath();
+    ctx.arc(tr.x + ox, tr.y + oy, 6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
 
   // 손잡이
   ctx.strokeStyle = '#8a5a34';
@@ -192,23 +203,12 @@ function drawPickaxe(ox, oy) {
   ctx.lineTo(tx, ty);
   ctx.stroke();
 
-  const headX = x + Math.cos(ang) * len * 0.39;
-  const headY = y + Math.sin(ang) * len * 0.39;
-
-  // 잔상
-  for (let i = player.trail.length - 1; i >= 0; i--) {
-    const tr = player.trail[i];
-    ctx.globalAlpha = tr.life * 3;
-    ctx.fillStyle = '#8dd8ff';
-    ctx.beginPath();
-    ctx.arc(tr.x + ox, tr.y + oy, 7, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
+  const headX = x + Math.cos(ang) * len * 0.42;
+  const headY = y + Math.sin(ang) * len * 0.42;
 
   // 헤드 글로우
   if (player.glow > 0) {
-    const r = 18 + player.glow * 18;
+    const r = 20 + player.glow * 18;
     const grd = ctx.createRadialGradient(headX, headY, 2, headX, headY, r);
     grd.addColorStop(0, 'rgba(255,240,170,0.9)');
     grd.addColorStop(1, 'rgba(255,240,170,0)');
@@ -218,27 +218,43 @@ function drawPickaxe(ox, oy) {
     ctx.fill();
   }
 
-  // 곡괭이 헤드 실루엣
+  // 곡괭이 헤드: T자 실루엣 + 한쪽 뾰족/한쪽 평날
   ctx.save();
   ctx.translate(headX, headY);
   ctx.rotate(ang);
 
-  ctx.fillStyle = '#d5e2ef';
+  // 금속 중앙 바(손잡이 결합부)
+  ctx.fillStyle = '#c2cfdd';
+  ctx.fillRect(-s * 0.06, -s * 0.20, s * 0.12, s * 0.34);
+
+  // 좌측 뾰족 픽
+  ctx.fillStyle = '#dce7f2';
   ctx.beginPath();
-  ctx.moveTo(-s * 0.35, -s * 0.06);
-  ctx.quadraticCurveTo(0, -s * 0.24, s * 0.36, -s * 0.06);
-  ctx.lineTo(s * 0.18, s * 0.09);
-  ctx.lineTo(-s * 0.20, s * 0.09);
+  ctx.moveTo(-s * 0.06, -s * 0.12);
+  ctx.lineTo(-s * 0.42, -s * 0.22);
+  ctx.lineTo(-s * 0.52, -s * 0.02);
+  ctx.lineTo(-s * 0.08, s * 0.02);
   ctx.closePath();
   ctx.fill();
 
-  ctx.fillStyle = '#9bb0c4';
+  // 우측 평날(애드즈)
   ctx.beginPath();
-  ctx.moveTo(-s * 0.28, -s * 0.03);
-  ctx.lineTo(-s * 0.45, s * 0.13);
-  ctx.lineTo(-s * 0.17, s * 0.09);
+  ctx.moveTo(s * 0.06, -s * 0.12);
+  ctx.lineTo(s * 0.50, -s * 0.08);
+  ctx.lineTo(s * 0.46, s * 0.08);
+  ctx.lineTo(s * 0.04, s * 0.10);
   ctx.closePath();
   ctx.fill();
+
+  // 하이라이트
+  ctx.strokeStyle = '#f1f7ff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-s * 0.40, -s * 0.16);
+  ctx.lineTo(-s * 0.16, -s * 0.10);
+  ctx.moveTo(s * 0.18, -s * 0.05);
+  ctx.lineTo(s * 0.42, -s * 0.03);
+  ctx.stroke();
 
   ctx.restore();
 }
