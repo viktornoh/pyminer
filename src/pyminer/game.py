@@ -45,6 +45,7 @@ class Game:
         self.player_x = self.w // 2
         self.player_y = int(self.h * 0.42)
         self.player_radius = cfg["PLAYER_RADIUS"]
+        self.player_vx = 0.0
         self.player_vy = 210.0
 
         self.camera_y = 0.0
@@ -72,6 +73,10 @@ class Game:
         self.active_skill_name = "-"
 
         self.shake_power = 0.0
+        self.hit_flash = 0.0
+        self.hit_stop_until = 0.0
+        self.player_invuln_until = 0.0
+        self.block_hit_at: dict[tuple[int, int], float] = {}
         self.start_at = time.time()
 
     def generate_rows(self, start_row: int, row_count: int):
@@ -177,38 +182,110 @@ class Game:
         ny = max(rect.top, min(cy, rect.bottom))
         return (cx - nx) ** 2 + (cy - ny) ** 2 <= r ** 2
 
+    def resolve_circle_rect(self, cx: float, cy: float, r: float, rect: pygame.Rect) -> tuple[float, float, float, float] | None:
+        nearest_x = max(rect.left, min(cx, rect.right))
+        nearest_y = max(rect.top, min(cy, rect.bottom))
+        dx = cx - nearest_x
+        dy = cy - nearest_y
+        dist_sq = dx * dx + dy * dy
+
+        if dist_sq > r * r:
+            return None
+
+        if dist_sq > 1e-6:
+            dist = math.sqrt(dist_sq)
+            nx = dx / dist
+            ny = dy / dist
+            penetration = r - dist
+            return nx, ny, penetration, max(0.0, -self.player_vx * nx - self.player_vy * ny)
+
+        left_pen = cx - rect.left
+        right_pen = rect.right - cx
+        top_pen = cy - rect.top
+        bot_pen = rect.bottom - cy
+        pen = min(left_pen, right_pen, top_pen, bot_pen)
+        if pen == left_pen:
+            return -1.0, 0.0, r + pen, max(0.0, self.player_vx)
+        if pen == right_pen:
+            return 1.0, 0.0, r + pen, max(0.0, -self.player_vx)
+        if pen == top_pen:
+            return 0.0, -1.0, r + pen, max(0.0, self.player_vy)
+        return 0.0, 1.0, r + pen, max(0.0, -self.player_vy)
+
     def handle_collisions(self):
         world_py = self.player_y + self.camera_y
         pr = self.player_radius * self.size_mul
+        now = time.time()
         kept: list[Block] = []
 
         for b in self.blocks:
             rect = pygame.Rect(b.x, b.y, self.block_size, self.block_size)
-            if self.circle_rect_hit(self.player_x, world_py, pr, rect):
-                if b.kind == "hazard":
-                    if self.shield:
-                        self.effects["shield"] = 0
-                        self.spawn_particles(rect.centerx, rect.centery, 12, (100, 220, 255))
-                    else:
-                        self.hp -= 1
-                        self.shake_power = max(self.shake_power, 6)
-                        self.spawn_particles(rect.centerx, rect.centery, 14, (255, 90, 90))
-                        if self.hp <= 0:
-                            self.game_over = True
+            hit = self.resolve_circle_rect(self.player_x, world_py, pr, rect)
+            if not hit:
+                kept.append(b)
+                continue
+
+            nx, ny, penetration, impact = hit
+            self.player_x += nx * penetration
+            world_py += ny * penetration
+            self.player_x = max(20, min(self.w - 20, self.player_x))
+
+            vn = self.player_vx * nx + self.player_vy * ny
+            if vn < 0:
+                restitution = 0.18 if b.kind != "hazard" else 0.05
+                self.player_vx -= (1.0 + restitution) * vn * nx
+                self.player_vy -= (1.0 + restitution) * vn * ny
+
+            block_key = (b.x, b.y)
+            recent_hit = now - self.block_hit_at.get(block_key, -99)
+
+            if b.kind == "hazard":
+                if self.shield:
+                    self.effects["shield"] = 0
+                    self.spawn_particles(rect.centerx, rect.centery, 12, (100, 220, 255))
+                    self.shake_power = max(self.shake_power, 8)
+                    self.hit_flash = max(self.hit_flash, 0.12)
                     continue
 
-                b.hp -= 1
+                if now >= self.player_invuln_until:
+                    self.hp -= 1
+                    self.player_invuln_until = now + 0.85
+                    self.player_vx += nx * 180
+                    self.player_vy += ny * 220
+                    self.shake_power = max(self.shake_power, 10)
+                    self.hit_flash = max(self.hit_flash, 0.2)
+                    self.spawn_particles(rect.centerx, rect.centery, 16, (255, 90, 90))
+                    if self.hp <= 0:
+                        self.game_over = True
+                kept.append(b)
+                continue
+
+            if recent_hit > 0.085:
+                bonus = 0
+                if impact > 170:
+                    bonus += 1
+                if impact > 280:
+                    bonus += 1
+                damage = 1 + bonus
+                b.hp -= damage
                 gain = 4 if b.kind == "normal" else 8
                 if b.kind == "ore":
                     gain = 20
-                self.score += gain
-                self.spawn_particles(rect.centerx, rect.centery, 5, (180, 180, 200))
+                self.score += gain + bonus * 2
+                self.block_hit_at[block_key] = now
+                self.spawn_particles(rect.centerx, rect.centery, 6 + bonus * 3, (180, 180, 200))
+                self.shake_power = max(self.shake_power, min(9, 2 + impact * 0.015))
+                self.hit_flash = max(self.hit_flash, min(0.14, 0.04 + impact * 0.00018))
+                self.hit_stop_until = max(self.hit_stop_until, now + min(0.05, 0.01 + impact * 0.00003))
 
-                if b.hp <= 0:
-                    continue
-            kept.append(b)
+            if b.hp > 0:
+                kept.append(b)
 
+        self.camera_y = world_py - self.player_y
         self.blocks = kept
+        if len(self.block_hit_at) > 2500:
+            cutoff = now - 1.2
+            self.block_hit_at = {k: t for k, t in self.block_hit_at.items() if t > cutoff}
 
     def update_particles(self, dt: float):
         kept = []
@@ -223,6 +300,7 @@ class Game:
 
     def update_world(self, dt: float):
         self.player_vy += self.cfg["GRAVITY"] * dt * 0.045
+        self.player_vx *= max(0.0, 1.0 - 8.0 * dt)
         self.camera_y += self.player_vy * dt * self.speed_mul
         self.depth = max(0, int(self.camera_y / self.block_size))
 
@@ -236,7 +314,7 @@ class Game:
             c = (int(10 + 25 * t), int(14 + 30 * t), int(28 + 45 * t))
             pygame.draw.line(self.screen, c, (0, y), (self.w, y))
 
-        for i, (sx, sy, s) in enumerate(self.stars):
+        for sx, sy, s in self.stars:
             sy2 = (sy - int(self.camera_y * (0.03 + s * 0.01))) % self.h
             pygame.draw.circle(self.screen, (90 + s * 30, 100 + s * 20, 140 + s * 20), (sx, sy2), s)
 
@@ -246,6 +324,7 @@ class Game:
         ox = int(random.uniform(-self.shake_power, self.shake_power)) if self.shake_power > 0 else 0
         oy = int(random.uniform(-self.shake_power, self.shake_power)) if self.shake_power > 0 else 0
         self.shake_power *= 0.85
+        self.hit_flash = max(0.0, self.hit_flash * 0.85)
 
         for b in self.blocks:
             sy = int(b.y - self.camera_y) + oy
@@ -261,10 +340,10 @@ class Game:
                 color = (175, 52, 52)
             pygame.draw.rect(self.screen, color, (x, sy, self.block_size - 2, self.block_size - 2), border_radius=6)
 
-        # pickaxe-like player
         px, py = self.player_x + ox, int(self.player_y) + oy
         pr = int(self.player_radius * self.size_mul)
-        pygame.draw.circle(self.screen, (220, 190, 90), (px, py), pr)
+        player_color = (220, 190, 90) if time.time() >= self.player_invuln_until or int(time.time() * 20) % 2 == 0 else (255, 130, 130)
+        pygame.draw.circle(self.screen, player_color, (px, py), pr)
         pygame.draw.line(self.screen, (145, 103, 63), (px - 4, py + pr), (px + 4, py + pr + 20), 6)
         pygame.draw.polygon(self.screen, (190, 210, 230), [(px - pr, py), (px + pr, py), (px, py - pr - 8)])
 
@@ -275,6 +354,11 @@ class Game:
             alpha = max(30, int(255 * p.life * 2))
             col = tuple(min(255, int(c * alpha / 255)) for c in p.color)
             pygame.draw.circle(self.screen, col, (int(p.x) + ox, int(p.y - self.camera_y) + oy), 2)
+
+        if self.hit_flash > 0:
+            flash = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
+            flash.fill((255, 245, 230, int(130 * self.hit_flash)))
+            self.screen.blit(flash, (0, 0))
 
         remain = max(0, int(self.round_seconds - (time.time() - self.start_at)))
         panel = pygame.Surface((self.w - 20, 104), pygame.SRCALPHA)
@@ -292,7 +376,6 @@ class Game:
             self.screen.blit(self.font.render(ln, True, (238, 238, 240)), (20, y))
             y += 22
 
-        # timer bar
         ratio = remain / self.round_seconds if self.round_seconds else 0
         pygame.draw.rect(self.screen, (55, 60, 75), (20, self.h - 28, self.w - 40, 10), border_radius=5)
         pygame.draw.rect(self.screen, (80, 220, 140), (20, self.h - 28, int((self.w - 40) * ratio), 10), border_radius=5)
@@ -333,20 +416,26 @@ class Game:
 
             keys = pygame.key.get_pressed()
             vx = self.cfg["PLAYER_BASE_SPEED"] * self.speed_mul
+            move_dir = 0
             if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-                self.player_x -= vx * dt
+                move_dir -= 1
             if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-                self.player_x += vx * dt
+                move_dir += 1
+            self.player_x += move_dir * vx * dt
+            self.player_vx = move_dir * vx
             self.player_x = max(20, min(self.w - 20, self.player_x))
 
             if self.cfg.get("AUTO_MODE", True) and random.random() < 0.018:
                 self.enqueue_command(random.choice(["tnt", "boost", "slow", "big", "shield"]))
 
-            if not self.game_over and (time.time() - self.start_at) < self.round_seconds:
+            now = time.time()
+            if not self.game_over and (now - self.start_at) < self.round_seconds:
                 self.pop_command()
                 self.apply_sponsor_skill()
                 self.update_effects()
-                self.update_world(dt)
+
+                if now >= self.hit_stop_until:
+                    self.update_world(dt)
                 self.handle_collisions()
                 self.update_particles(dt)
 
