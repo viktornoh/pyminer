@@ -1,5 +1,5 @@
 *{box-sizing:border-box}
 body{margin:0;background:#0b1020;color:#dfe6ff;font-family:system-ui,Apple SD Gothic Neo,sans-serif;display:grid;place-items:center;min-height:100vh}
 .wrap{display:flex;flex-direction:column;gap:10px;align-items:center;padding:14px}
-canvas{border:1px solid #2b355a;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.35);max-width:min(92vw,540px);height:auto}
+canvas{border:1px solid #3a4f86;border-radius:12px;box-shadow:0 10px 36px rgba(0,0,0,.5),0 0 0 2px rgba(88,122,198,.28) inset;max-width:min(92vw,540px);height:auto}
 .hint{font-size:13px;opacity:.92;background:rgba(18,24,44,.8);padding:8px 12px;border-radius:999px;border:1px solid #31406f}

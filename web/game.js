@@ -638,6 +638,13 @@ function draw() {
     ctx.fillRect(0, 0, W, H);
   }
 
+  // 기본 비네트로 중심부 시각적 대비 강화
+  const vg = ctx.createRadialGradient(W * 0.5, H * 0.44, H * 0.18, W * 0.5, H * 0.5, H * 0.86);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(1,3,8,0.42)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+
   // HUD (가독성 강화)
   ctx.fillStyle = 'rgba(8,10,16,.72)';
   ctx.fillRect(12, 12, W - 24, 74);
@@ -664,4 +671,3 @@ function loop(now) {
 
 reset();
 requestAnimationFrame(loop);
-nimationFrame(loop);
