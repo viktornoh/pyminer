@@ -10,13 +10,21 @@ PyCon 행사형 인터랙티브 게임 MVP.
 - [x] 스폰서 스킬 3종(Cloud/Security/AI)
 
 ## 실행
-### macOS / Linux
+### HTML + JS 버전 (추천)
+```bash
+cd web
+python3 -m http.server 8000
+# 브라우저에서 http://localhost:8000
+```
+
+### Python 버전
+#### macOS / Linux
 ```bash
 chmod +x run.sh
 ./run.sh
 ```
 
-### 수동 실행
+#### 수동 실행
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate

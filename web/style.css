@@ -1,0 +1,1 @@
+*{box-sizing:border-box} body{margin:0;background:#0b1020;color:#dfe6ff;font-family:system-ui,Apple SD Gothic Neo,sans-serif;display:grid;place-items:center;min-height:100vh} .wrap{display:flex;flex-direction:column;gap:10px;align-items:center} canvas{border:1px solid #2b355a;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.35)} .hint{font-size:13px;opacity:.85}
