@@ -23,6 +23,9 @@ let hitPulse = 0;
 let hazardPulse = 0;
 let lastHit = null;
 let hitCooldown = 0;
+let hitstop = 0;
+let recoilX = 0;
+let recoilY = 0;
 
 const player = {
   x: W * 0.5,
@@ -43,6 +46,9 @@ function reset() {
   camBob = 0;
   t = 0;
   hitCooldown = 0;
+  hitstop = 0;
+  recoilX = 0;
+  recoilY = 0;
   for (let r = 0; r < 260; r++) addRow(r);
 }
 
@@ -82,7 +88,7 @@ function pickaxeHeadPos() {
   };
 }
 
-function spawnDebris(x, y, type, power = 1) {
+function spawnDebris(x, y, type, power = 1, opts = {}) {
   const palette = {
     normal: '#d8dbe8',
     ore: '#57d3ff',
@@ -91,10 +97,21 @@ function spawnDebris(x, y, type, power = 1) {
   };
   const color = palette[type] || '#ffffff';
   const n = 7 + Math.floor(power * 4);
+  const baseAngle = opts.baseAngle ?? Math.random() * Math.PI * 2;
+  const spread = opts.spread ?? Math.PI * 2;
+  const downBoost = opts.downBoost ?? 0;
   for (let i = 0; i < n; i++) {
-    const a = Math.random() * Math.PI * 2;
+    const a = baseAngle + (Math.random() - 0.5) * spread;
     const s = (80 + Math.random() * 220) * (0.8 + power * 0.4);
-    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.25 + Math.random() * 0.4, color });
+    particles.push({
+      x,
+      y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s + downBoost,
+      life: 0.25 + Math.random() * 0.4,
+      color,
+      size: 2 + Math.random() * 2.8,
+    });
   }
   if (particles.length > MAX_PARTICLES) {
     particles.splice(0, particles.length - MAX_PARTICLES);
@@ -107,6 +124,7 @@ function autoHit() {
   let bestTarget = null;
   let bestDist = Infinity;
   let hitCount = 0;
+  let strongestImpact = 0;
 
   for (const b of blocks) {
     const by = b.y - camY;
@@ -125,9 +143,11 @@ function autoHit() {
     hitCount++;
     if (b.type === 'hazard') {
       b.flash = 0.18;
-      spawnDebris(cx, cy, 'hazard', 0.9);
+      const hitAng = Math.atan2(cy - head.y, cx - head.x);
+      spawnDebris(cx, cy, 'hazard', 0.9, { baseAngle: hitAng, spread: Math.PI * 1.3, downBoost: camVel * 0.2 });
       hazardPulse = 0.26;
       shake = Math.max(shake, 6);
+      strongestImpact = Math.max(strongestImpact, 0.8);
       continue;
     }
 
@@ -136,12 +156,25 @@ function autoHit() {
     if (b.hp === 1) b.blink = 0.35;
 
     const power = Math.max(0.7, 1.2 - d / radius);
-    spawnDebris(cx, cy, b.type, power);
+    const hitAng = Math.atan2(cy - head.y, cx - head.x);
+    spawnDebris(cx, cy, b.type, power, {
+      baseAngle: hitAng,
+      spread: Math.PI * 1.45,
+      downBoost: camVel * 0.25,
+    });
 
     if (b.hp <= 0) {
       score += b.type === 'ore' ? 55 : b.type === 'hard' ? 18 : 10;
       player.glow = 0.12;
       shake = Math.max(shake, 7 * power);
+      spawnDebris(cx, cy, b.type, power * 1.2, {
+        baseAngle: hitAng,
+        spread: Math.PI * 0.9,
+        downBoost: 80 + camVel * 0.45,
+      });
+      strongestImpact = Math.max(strongestImpact, 1.15 * power);
+    } else {
+      strongestImpact = Math.max(strongestImpact, 0.75 * power);
     }
   }
 
@@ -154,30 +187,46 @@ function autoHit() {
       strong: bestTarget && bestTarget.type === 'hazard' ? 1 : 0,
     };
     hitPulse = 0.18;
+    hitstop = Math.max(hitstop, 0.028 + strongestImpact * 0.013);
+    recoilX -= player.face * (4 + strongestImpact * 2.8);
+    recoilY -= 1.4 + strongestImpact;
     player.trail.push({ x: head.x, y: head.y, life: 0.12 });
     if (player.trail.length > 8) player.trail.shift();
   }
 }
 function update(dt) {
   t += dt;
+  const simDt = hitstop > 0 ? dt * 0.14 : dt;
+  hitstop = Math.max(0, hitstop - dt);
 
   // 방치형 자동 플레이: 좌우 드리프트 + 주기적 방향전환
   player.x = W * 0.5 + Math.sin(t * 0.85) * (W * 0.28);
   player.face = Math.cos(t * 0.85) >= 0 ? 1 : -1;
 
   // 자동 스윙 리듬 (쿨다운 기반으로 일정한 타격감)
-  player.swing = Math.max(0, player.swing - dt * 5.8);
-  hitCooldown -= dt;
+  player.swing = Math.max(0, player.swing - simDt * 5.8);
+  hitCooldown -= simDt;
   if (hitCooldown <= 0) {
     hitCooldown = HIT_COOLDOWN + Math.random() * 0.02;
     player.swing = 1;
     autoHit();
   }
 
-  // 카메라: 기본 하강 + 타격 반동
-  camVel = Math.max(28, camVel - dt * 13);
-  camBob = Math.max(0, camBob - dt * 60);
-  camY += (camVel - camBob) * dt;
+  // 카메라: 중력 기반 하강 + 타격 반동
+  let support = 0;
+  const probeY = camY + H * 0.62;
+  for (const b of blocks) {
+    const y = b.y - probeY;
+    if (Math.abs(y) > BLOCK * 2.4) continue;
+    const dx = Math.abs((b.x + b.w * 0.5) - player.x);
+    if (dx < BLOCK * 1.7 && b.type !== 'hazard') support++;
+  }
+  const dropFactor = Math.max(0, 1 - support / 5);
+  const gravity = 120 + dropFactor * 230;
+  const terminal = 84 + dropFactor * 180;
+  camVel = Math.min(terminal, camVel + gravity * simDt);
+  camBob = Math.max(0, camBob - simDt * 60);
+  camY += (camVel - camBob) * simDt;
 
   // 블록 스트리밍
   const maxRow = Math.floor((camY + H * 2) / BLOCK);
@@ -190,37 +239,41 @@ function update(dt) {
   blocks = blocks.filter((b) => b.y + b.h > pruneY);
 
   // VFX 업데이트
-  player.glow = Math.max(0, player.glow - dt * 2.4);
-  hitPulse = Math.max(0, hitPulse - dt * 4.5);
-  hazardPulse = Math.max(0, hazardPulse - dt * 3.5);
-  for (const tr of player.trail) tr.life -= dt;
+  player.glow = Math.max(0, player.glow - simDt * 2.4);
+  hitPulse = Math.max(0, hitPulse - simDt * 4.5);
+  hazardPulse = Math.max(0, hazardPulse - simDt * 3.5);
+  for (const tr of player.trail) tr.life -= simDt;
   player.trail = player.trail.filter((tr) => tr.life > 0);
 
+  recoilX *= Math.pow(0.0008, simDt);
+  recoilY *= Math.pow(0.0008, simDt);
+
   for (const b of blocks) {
-    b.flash = Math.max(0, b.flash - dt * 2.8);
-    b.blink = Math.max(0, b.blink - dt);
+    b.flash = Math.max(0, b.flash - simDt * 2.8);
+    b.blink = Math.max(0, b.blink - simDt);
   }
 
   if (lastHit) {
-    lastHit.life -= dt;
+    lastHit.life -= simDt;
     if (lastHit.life <= 0) lastHit = null;
   }
 
   for (const p of particles) {
-    p.life -= dt;
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    p.vy += 450 * dt;
+    p.life -= simDt;
+    p.x += p.vx * simDt;
+    p.y += p.vy * simDt;
+    p.vy += 520 * simDt;
+    p.vx *= Math.pow(0.22, simDt);
   }
   particles = particles.filter((p) => p.life > 0);
 
-  shake = Math.max(0, shake - dt * 20);
+  shake = Math.max(0, shake - simDt * 20);
 }
 
 function drawPickaxe(ox, oy) {
   const s = player.size;
-  const x = player.x + ox;
-  const y = player.y + oy;
+  const x = player.x + ox + recoilX;
+  const y = player.y + oy + recoilY;
   const len = s * 0.84;
   const ang = (player.face === 1 ? -0.30 : Math.PI + 0.30) + player.swing * 0.72 * player.face;
 
