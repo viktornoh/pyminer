@@ -77,6 +77,13 @@ class Game:
         self.hit_stop_until = 0.0
         self.player_invuln_until = 0.0
         self.block_hit_at: dict[tuple[int, int], float] = {}
+
+        self.block_contact_cooldown = cfg.get("BLOCK_CONTACT_COOLDOWN_SECONDS", 0.085)
+        self.hazard_invuln_seconds = cfg.get("HAZARD_INVULN_SECONDS", 0.85)
+        self.impact_hitstop_max = cfg.get("IMPACT_HITSTOP_MAX_SECONDS", 0.05)
+        self.restitution_normal = cfg.get("RESTITUTION_NORMAL", 0.18)
+        self.restitution_hazard = cfg.get("RESTITUTION_HAZARD", 0.05)
+
         self.start_at = time.time()
 
     def generate_rows(self, start_row: int, row_count: int):
@@ -232,7 +239,7 @@ class Game:
 
             vn = self.player_vx * nx + self.player_vy * ny
             if vn < 0:
-                restitution = 0.18 if b.kind != "hazard" else 0.05
+                restitution = self.restitution_normal if b.kind != "hazard" else self.restitution_hazard
                 self.player_vx -= (1.0 + restitution) * vn * nx
                 self.player_vy -= (1.0 + restitution) * vn * ny
 
@@ -249,7 +256,7 @@ class Game:
 
                 if now >= self.player_invuln_until:
                     self.hp -= 1
-                    self.player_invuln_until = now + 0.85
+                    self.player_invuln_until = now + self.hazard_invuln_seconds
                     self.player_vx += nx * 180
                     self.player_vy += ny * 220
                     self.shake_power = max(self.shake_power, 10)
@@ -260,7 +267,7 @@ class Game:
                 kept.append(b)
                 continue
 
-            if recent_hit > 0.085:
+            if recent_hit > self.block_contact_cooldown:
                 bonus = 0
                 if impact > 170:
                     bonus += 1
@@ -276,7 +283,7 @@ class Game:
                 self.spawn_particles(rect.centerx, rect.centery, 6 + bonus * 3, (180, 180, 200))
                 self.shake_power = max(self.shake_power, min(9, 2 + impact * 0.015))
                 self.hit_flash = max(self.hit_flash, min(0.14, 0.04 + impact * 0.00018))
-                self.hit_stop_until = max(self.hit_stop_until, now + min(0.05, 0.01 + impact * 0.00003))
+                self.hit_stop_until = max(self.hit_stop_until, now + min(self.impact_hitstop_max, 0.01 + impact * 0.00003))
 
             if b.hp > 0:
                 kept.append(b)
