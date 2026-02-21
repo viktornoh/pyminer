@@ -65,6 +65,7 @@ let preImpactPulse = 0;
 let groundGrip = 0;
 let groundLatch = 0;
 let headFocusPulse = 0;
+let pickaxeSilhouettePulse = 0;
 let impactFlash = 0;
 let impactStreak = 0;
 let freefallChain = 0;
@@ -122,6 +123,7 @@ function reset() {
   groundGrip = 0;
   groundLatch = 0;
   headFocusPulse = 0;
+  pickaxeSilhouettePulse = 0;
   impactFlash = 0;
   impactStreak = 0;
   freefallChain = 0;
@@ -327,6 +329,7 @@ function autoHit() {
     comboPulse = Math.min(1, comboPulse + Math.min(0.34, hitCount * 0.08));
     impactStreak = Math.min(1, impactStreak + Math.min(0.26, hitCount * 0.07));
     headFocusPulse = Math.min(1, headFocusPulse + 0.34 + strongestImpact * 0.24 + impactStreak * 0.14);
+    pickaxeSilhouettePulse = Math.min(1, pickaxeSilhouettePulse + 0.28 + strongestImpact * 0.26);
     impactFlash = Math.min(1, impactFlash + 0.18 + strongestImpact * 0.22 + impactStreak * 0.08);
   }
 }
@@ -497,6 +500,7 @@ function update(dt) {
   comboPulse = Math.max(0, comboPulse - simDt * 1.8);
   impactStreak = Math.max(0, impactStreak - simDt * 1.35);
   headFocusPulse = Math.max(0, headFocusPulse - simDt * 3.4);
+  pickaxeSilhouettePulse = Math.max(0, pickaxeSilhouettePulse - simDt * 2.8);
   impactFlash = Math.max(0, impactFlash - simDt * 7.6);
   fallStress = Math.max(0, fallStress - simDt * (grounded ? 1.9 : 0.35));
   airRumble = Math.max(0, airRumble - simDt * 2.4);
@@ -535,9 +539,12 @@ function update(dt) {
 
 function drawPickaxe(ox, oy) {
   const s = player.size;
+  const swingEnergy = Math.max(0, player.swing);
+  const windup = Math.max(0, -player.swing);
+  const motionLift = windup * 11 - swingEnergy * 4;
   const x = player.x + ox + recoilX;
-  const y = player.y + oy + recoilY;
-  const len = s * (0.82 + Math.max(0, player.swing) * 0.06);
+  const y = player.y + oy + recoilY + motionLift;
+  const len = s * (0.82 + swingEnergy * 0.06);
   const ang = (player.face === 1 ? -0.30 : Math.PI + 0.30) + player.swing * 0.80 * player.face;
 
   const hx = x - Math.cos(ang) * len * 0.48;
@@ -554,6 +561,15 @@ function drawPickaxe(ox, oy) {
   ctx.beginPath();
   ctx.arc(x, y, backR, 0, Math.PI * 2);
   ctx.fill();
+
+  // 타격 직후 실루엣 펄스: 블록과 겹쳐도 곡괭이 형태가 안 죽도록 대비 보강
+  if (pickaxeSilhouettePulse > 0.01) {
+    ctx.strokeStyle = `rgba(12,20,34,${0.22 + pickaxeSilhouettePulse * 0.34})`;
+    ctx.lineWidth = 11 + pickaxeSilhouettePulse * 8;
+    ctx.beginPath();
+    ctx.arc(x, y, s * (0.60 + pickaxeSilhouettePulse * 0.20), 0, Math.PI * 2);
+    ctx.stroke();
+  }
 
   // 타격 직후 실루엣 링으로 헤드 위치를 더 선명하게 강조
   if (headFocusPulse > 0.01) {
@@ -613,7 +629,6 @@ function drawPickaxe(ox, oy) {
   ctx.globalAlpha = 1;
 
   // 손잡이 외곽(실루엣 강화)
-  const swingEnergy = Math.max(0, player.swing);
   ctx.strokeStyle = '#140d09';
   ctx.lineWidth = 15.5 + comboPulse * 2.2 + swingEnergy * 1.8;
   ctx.lineCap = 'round';
