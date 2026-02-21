@@ -113,6 +113,7 @@ function spawnDebris(x, y, type, power = 1, opts = {}) {
     ore: '#57d3ff',
     hard: '#b88a64',
     hazard: '#ff6666',
+    dust: '#c8d0df',
   };
   const color = palette[type] || '#ffffff';
   const n = 7 + Math.floor(power * 4);
@@ -256,19 +257,31 @@ function update(dt) {
     const dx = Math.abs((b.x + b.w * 0.5) - player.x);
     if (dx < BLOCK * 1.7 && b.type !== 'hazard') support++;
   }
+  const grounded = support >= 3;
   const dropFactor = Math.max(0, 1 - support / 5);
   const gravity = 120 + dropFactor * 230;
   const terminal = 84 + dropFactor * 180;
   camVel = Math.min(terminal, camVel + gravity * simDt);
 
-  // 지지층과 다시 맞닿을 때 짧은 착지 임팩트
-  if (support >= 3 && prevSupport <= 1 && camVel > 46) {
+  // 지지층을 밟고 있을 때는 낙하속도를 추가 감쇠해 “붙잡히는” 느낌 강화
+  if (grounded) {
+    const brake = 150 + Math.min(70, support * 12);
+    camVel = Math.max(26, camVel - brake * simDt);
+  }
+
+  // 공중 -> 지면 전환 시 짧은 착지 임팩트
+  if (grounded && !wasGrounded && camVel > 46) {
     const thud = Math.min(1, (camVel - 40) / 80);
     camBob += 14 + thud * 24;
     shake = Math.max(shake, 3 + thud * 5);
     landingPulse = Math.max(landingPulse, 0.26 + thud * 0.12);
+    spawnDebris(player.x, H * 0.66, 'dust', 0.75 + thud * 0.55, {
+      baseAngle: Math.PI * 0.5,
+      spread: Math.PI * 0.7,
+      downBoost: 20,
+    });
   }
-  prevSupport = support;
+  wasGrounded = grounded;
 
   camBob = Math.max(0, camBob - simDt * 60);
   camY += (camVel - camBob) * simDt;
@@ -287,7 +300,7 @@ function update(dt) {
   hazardPulse = Math.max(0, hazardPulse - simDt * 3.5);
   landingPulse = Math.max(0, landingPulse - simDt * 3.2);
   for (const tr of player.trail) tr.life -= simDt;
-  player.trail = player.trail.filter((tr) => tr.life > 0);
+  compactInPlace(player.trail, (tr) => tr.life > 0);
 
   recoilX *= Math.pow(0.0008, simDt);
   recoilY *= Math.pow(0.0008, simDt);
@@ -424,6 +437,9 @@ function drawPickaxe(ox, oy) {
   ctx.save();
   ctx.translate(headX, headY);
   ctx.rotate(ang);
+  ctx.shadowColor = 'rgba(0,0,0,0.45)';
+  ctx.shadowBlur = 10;
+  ctx.shadowOffsetY = 3;
 
   // 헤드 외곽 실루엣
   ctx.strokeStyle = '#0d131f';
@@ -525,8 +541,16 @@ function draw() {
     if (b.flash > 0) col = '#ffd887';
     if (b.blink > 0 && Math.floor(b.blink * 30) % 2 === 0) col = '#ffca74';
 
+    const bx = b.x + ox;
     ctx.fillStyle = col;
-    ctx.fillRect(b.x + ox, y, b.w, b.h);
+    ctx.fillRect(bx, y, b.w, b.h);
+
+    // 외곽선/하이라이트로 블록 대비 강화
+    ctx.strokeStyle = 'rgba(9,13,22,0.6)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(bx + 1, y + 1, b.w - 2, b.h - 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fillRect(bx + 3, y + 3, b.w - 10, 3);
 
     // 크랙
     const ratio = b.hp / b.maxHp;
@@ -554,28 +578,46 @@ function draw() {
   ctx.globalAlpha = 1;
 
 
-  // 피격 피드백(임팩트 링 + 스파크)
-  if (lastHit) {
-    const a = Math.min(1, lastHit.life * 5);
-    const r = 12 + (1 - a) * 22;
-    ctx.globalAlpha = a;
-    ctx.strokeStyle = lastHit.strong ? '#ff7d7d' : '#ffd887';
-    ctx.lineWidth = 3;
+  // 피격 피드백(다중 임팩트 링 + 스파크)
+  for (const ib of impactBursts) {
+    const lifeN = Math.max(0, ib.life / ib.maxLife);
+    const bloom = (1 - lifeN);
+    const baseR = 10 + bloom * (20 + ib.power * 9);
+    const hitColor = ib.strong > 0.8 ? '255,92,92' : ib.strong > 0.2 ? '99,221,255' : '255,216,135';
+
+    ctx.globalAlpha = 0.88 * lifeN;
+    ctx.strokeStyle = `rgba(${hitColor}, ${0.25 + lifeN * 0.55})`;
+    ctx.lineWidth = 2 + ib.power * 2;
     ctx.beginPath();
-    ctx.arc(lastHit.x + ox, lastHit.y + oy, r, 0, Math.PI * 2);
+    ctx.arc(ib.x + ox, ib.y + oy, baseR, 0, Math.PI * 2);
     ctx.stroke();
 
+    ctx.globalAlpha = 0.65 * lifeN;
     ctx.beginPath();
-    for (let i = 0; i < 4; i++) {
-      const ang = (Math.PI * 2 * i) / 4 + t * 8;
-      const sx = lastHit.x + ox + Math.cos(ang) * (r - 4);
-      const sy = lastHit.y + oy + Math.sin(ang) * (r - 4);
-      const ex = lastHit.x + ox + Math.cos(ang) * (r + 8);
-      const ey = lastHit.y + oy + Math.sin(ang) * (r + 8);
+    for (let i = 0; i < 6; i++) {
+      const ang = (Math.PI * 2 * i) / 6 + t * 7.5;
+      const sx = ib.x + ox + Math.cos(ang) * (baseR - 5);
+      const sy = ib.y + oy + Math.sin(ang) * (baseR - 5);
+      const ex = ib.x + ox + Math.cos(ang) * (baseR + 10 + ib.power * 5);
+      const ey = ib.y + oy + Math.sin(ang) * (baseR + 10 + ib.power * 5);
       ctx.moveTo(sx, sy);
       ctx.lineTo(ex, ey);
     }
     ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  if (lastHit) {
+    const a = Math.min(1, lastHit.life * 5);
+    const r = 22 + (1 - a) * 34;
+    const glow = ctx.createRadialGradient(lastHit.x + ox, lastHit.y + oy, 2, lastHit.x + ox, lastHit.y + oy, r);
+    glow.addColorStop(0, lastHit.strong ? 'rgba(255,92,92,0.44)' : 'rgba(255,216,135,0.40)');
+    glow.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.globalAlpha = a * 0.9;
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(lastHit.x + ox, lastHit.y + oy, r, 0, Math.PI * 2);
+    ctx.fill();
     ctx.globalAlpha = 1;
   }
 
