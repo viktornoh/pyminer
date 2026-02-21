@@ -13,8 +13,6 @@ let baseVignette = null;
 const MAX_PARTICLES = 650;
 const PRUNE_MARGIN_ROWS = 16;
 const HIT_COOLDOWN = 0.19;
-const SWING_DURATION = 0.20;
-const SWING_IMPACT_PHASE = 0.46;
 const MAX_IMPACTS = 14;
 const MAX_SLASH_MARKS = 18;
 
@@ -90,8 +88,6 @@ const player = {
   face: 1,
   size: BLOCK * 2.1,
   swing: 0,
-  swingPhase: 1,
-  swingHitDone: true,
   glow: 0,
   trail: [],
 };
@@ -326,6 +322,22 @@ function autoHit() {
     impactFlash = Math.min(1, impactFlash + 0.18 + strongestImpact * 0.22 + impactStreak * 0.08);
   }
 }
+function swingValueFromPhase(phase) {
+  const p = Math.max(0, Math.min(1, phase));
+  if (p < 0.24) {
+    const k = p / 0.24;
+    return -0.24 * (k * k);
+  }
+  if (p < SWING_IMPACT_PHASE) {
+    const k = (p - 0.24) / (SWING_IMPACT_PHASE - 0.24);
+    const eased = 1 - Math.pow(1 - k, 3);
+    return -0.24 + eased * 1.29;
+  }
+  const k = (p - SWING_IMPACT_PHASE) / (1 - SWING_IMPACT_PHASE);
+  const eased = 1 - Math.pow(1 - k, 2.1);
+  return 1.05 * (1 - eased);
+}
+
 function update(dt) {
   t += dt;
   const simDt = hitstop > 0 ? dt * 0.14 : dt;
@@ -339,12 +351,18 @@ function update(dt) {
   player.x = W * 0.5 + Math.sin(t * 0.85) * (W * 0.28);
   player.face = Math.cos(t * 0.85) >= 0 ? 1 : -1;
 
-  // 자동 스윙 리듬 (쿨다운 기반으로 일정한 타격감)
-  player.swing = Math.max(0, player.swing - simDt * 5.8);
+  // 자동 스윙 리듬: 백스윙 -> 임팩트 -> 팔로우스루 곡선으로 타격 모션 개선
   hitCooldown -= simDt;
   if (hitCooldown <= 0) {
     hitCooldown = HIT_COOLDOWN + Math.random() * 0.02;
-    player.swing = 1;
+    player.swingPhase = 0;
+    player.swingHitDone = false;
+  }
+
+  player.swingPhase = Math.min(1, player.swingPhase + simDt / SWING_DURATION);
+  player.swing = swingValueFromPhase(player.swingPhase);
+  if (!player.swingHitDone && player.swingPhase >= SWING_IMPACT_PHASE) {
+    player.swingHitDone = true;
     autoHit();
   }
 
@@ -602,10 +620,20 @@ function drawPickaxe(ox, oy) {
   const headX = x + Math.cos(ang) * len * 0.42;
   const headY = y + Math.sin(ang) * len * 0.42;
 
+  // 헤드 실루엣 앵커: 언제나 보이는 저채도 백링(배경/블록 위 가독성 확보)
+  const anchorR = s * (0.18 + headFocusPulse * 0.05 + impactStreak * 0.08);
+  const anchorG = ctx.createRadialGradient(headX, headY, 2, headX, headY, anchorR * 2.4);
+  anchorG.addColorStop(0, `rgba(8,12,20,${0.42 + impactStreak * 0.2})`);
+  anchorG.addColorStop(1, 'rgba(8,12,20,0)');
+  ctx.fillStyle = anchorG;
+  ctx.beginPath();
+  ctx.arc(headX, headY, anchorR * 2.4, 0, Math.PI * 2);
+  ctx.fill();
+
   // 헤드 글로우
-  if (player.glow > 0 || hitPulse > 0) {
-    const pulse = Math.max(player.glow, hitPulse * 0.8);
-    const r = 20 + pulse * 24;
+  if (player.glow > 0 || hitPulse > 0 || impactStreak > 0.08) {
+    const pulse = Math.max(player.glow, hitPulse * 0.8, impactStreak * 0.55);
+    const r = 20 + pulse * 30;
     const grd = ctx.createRadialGradient(headX, headY, 2, headX, headY, r);
     grd.addColorStop(0, 'rgba(255,240,170,0.95)');
     grd.addColorStop(1, 'rgba(255,240,170,0)');
@@ -753,10 +781,7 @@ function draw() {
     const y = b.y - camY + oy;
     if (y < -BLOCK || y > H + BLOCK) continue;
 
-    let col = '#6d7892';
-    if (b.type === 'ore') col = '#2bafea';
-    if (b.type === 'hard') col = '#8f6748';
-    if (b.type === 'hazard') col = '#b64040';
+    let col = BLOCK_COLORS[b.type] || BLOCK_COLORS.normal;
 
     if (b.flash > 0) col = '#ffd887';
     if (b.blink > 0 && Math.floor(b.blink * 30) % 2 === 0) col = '#ffca74';
