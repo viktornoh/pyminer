@@ -47,6 +47,7 @@ class Game:
         self.player_radius = cfg["PLAYER_RADIUS"]
         self.player_vx = 0.0
         self.player_vy = 210.0
+        self.move_dir = 0
 
         self.camera_y = 0.0
         self.score = 0
@@ -85,6 +86,9 @@ class Game:
         self.impact_hitstop_max = cfg.get("IMPACT_HITSTOP_MAX_SECONDS", 0.05)
         self.restitution_normal = cfg.get("RESTITUTION_NORMAL", 0.18)
         self.restitution_hazard = cfg.get("RESTITUTION_HAZARD", 0.05)
+        self.air_control = cfg.get("AIR_CONTROL", 9.5)
+        self.max_fall_speed = cfg.get("MAX_FALL_SPEED", 780)
+        self.wall_friction = cfg.get("WALL_FRICTION", 0.82)
 
         self.start_at = time.time()
 
@@ -247,6 +251,11 @@ class Game:
                 self.player_vx -= (1.0 + restitution) * vn * nx
                 self.player_vy -= (1.0 + restitution) * vn * ny
 
+                tangent_x, tangent_y = -ny, nx
+                vt = self.player_vx * tangent_x + self.player_vy * tangent_y
+                self.player_vx -= vt * (1.0 - self.wall_friction) * tangent_x
+                self.player_vy -= vt * (1.0 - self.wall_friction) * tangent_y
+
             block_key = (b.x, b.y)
             recent_hit = now - self.block_hit_at.get(block_key, -99)
 
@@ -291,6 +300,11 @@ class Game:
 
             if b.hp > 0:
                 kept.append(b)
+            else:
+                self.spawn_particles(rect.centerx, rect.centery, 12, (245, 235, 190))
+                self.player_vy *= 0.96
+                self.shake_power = max(self.shake_power, 6)
+                self.hit_flash = max(self.hit_flash, 0.12)
 
         self.camera_y = world_py - self.player_y
         self.blocks = kept
@@ -310,8 +324,16 @@ class Game:
         self.particles = kept
 
     def update_world(self, dt: float):
+        target_vx = self.move_dir * self.cfg["PLAYER_BASE_SPEED"] * self.speed_mul
+        blend = min(1.0, self.air_control * dt)
+        self.player_vx += (target_vx - self.player_vx) * blend
+
         self.player_vy += self.cfg["GRAVITY"] * dt * 0.045
-        self.player_vx *= max(0.0, 1.0 - 8.0 * dt)
+        self.player_vy = min(self.max_fall_speed, self.player_vy)
+
+        self.player_x += self.player_vx * dt
+        self.player_x = max(20, min(self.w - 20, self.player_x))
+
         self.camera_y += self.player_vy * dt * self.speed_mul
         self.depth = max(0, int(self.camera_y / self.block_size))
 
@@ -355,8 +377,9 @@ class Game:
         pr = int(self.player_radius * self.size_mul)
         player_color = (220, 190, 90) if time.time() >= self.player_invuln_until or int(time.time() * 20) % 2 == 0 else (255, 130, 130)
         pygame.draw.circle(self.screen, player_color, (px, py), pr)
-        pygame.draw.line(self.screen, (145, 103, 63), (px - 4, py + pr), (px + 4, py + pr + 20), 6)
-        pygame.draw.polygon(self.screen, (190, 210, 230), [(px - pr, py), (px + pr, py), (px, py - pr - 8)])
+        lean = max(-7, min(7, int(self.player_vx * 0.03)))
+        pygame.draw.line(self.screen, (145, 103, 63), (px - 4 + lean // 2, py + pr), (px + 4 + lean, py + pr + 20), 6)
+        pygame.draw.polygon(self.screen, (190, 210, 230), [(px - pr + lean, py), (px + pr + lean, py), (px + lean // 2, py - pr - 8)])
 
         if self.shield:
             pygame.draw.circle(self.screen, (110, 230, 255), (px, py), pr + 7, 2)
@@ -438,15 +461,11 @@ class Game:
                         self.enqueue_command("shield")
 
             keys = pygame.key.get_pressed()
-            vx = self.cfg["PLAYER_BASE_SPEED"] * self.speed_mul
-            move_dir = 0
+            self.move_dir = 0
             if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-                move_dir -= 1
+                self.move_dir -= 1
             if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-                move_dir += 1
-            self.player_x += move_dir * vx * dt
-            self.player_vx = move_dir * vx
-            self.player_x = max(20, min(self.w - 20, self.player_x))
+                self.move_dir += 1
 
             if self.cfg.get("AUTO_MODE", True) and random.random() < 0.018:
                 self.enqueue_command(random.choice(["tnt", "boost", "slow", "big", "shield"]))
