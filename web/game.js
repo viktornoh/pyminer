@@ -39,7 +39,6 @@ let recoilX = 0;
 let recoilY = 0;
 let wasGrounded = false;
 let generatedMaxRow = 0;
-let prevSupport = 0;
 let landingPulse = 0;
 
 const player = {
@@ -65,7 +64,7 @@ function reset() {
   hitstop = 0;
   recoilX = 0;
   recoilY = 0;
-  prevSupport = 0;
+  wasGrounded = false;
   landingPulse = 0;
   generatedMaxRow = 259;
   for (let r = 0; r < 260; r++) addRow(r);
@@ -197,6 +196,7 @@ function autoHit() {
       spread: Math.PI * 1.45,
       downBoost: camVel * 0.25,
     });
+    spawnImpactBurst(cx, cy, b.type, power);
 
     if (b.hp <= 0) {
       score += b.type === 'ore' ? 55 : b.type === 'hard' ? 18 : 10;
@@ -302,6 +302,9 @@ function update(dt) {
     if (lastHit.life <= 0) lastHit = null;
   }
 
+  for (const ib of impactBursts) ib.life -= simDt;
+  impactBursts = impactBursts.filter((ib) => ib.life > 0);
+
   for (const p of particles) {
     p.life -= simDt;
     p.x += p.vx * simDt;
@@ -325,6 +328,35 @@ function drawPickaxe(ox, oy) {
   const hy = y - Math.sin(ang) * len * 0.48;
   const tx = x + Math.cos(ang) * len * 0.48;
   const ty = y + Math.sin(ang) * len * 0.48;
+
+  // 곡괭이 실루엣 대비용 백플레이트
+  const backR = s * (0.58 + player.swing * 0.14);
+  const backG = ctx.createRadialGradient(x, y, 6, x, y, backR);
+  backG.addColorStop(0, 'rgba(5,8,16,0.55)');
+  backG.addColorStop(1, 'rgba(5,8,16,0)');
+  ctx.fillStyle = backG;
+  ctx.beginPath();
+  ctx.arc(x, y, backR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 스윙 궤적(타격 타이밍 가시화)
+  if (player.swing > 0.02) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(ang);
+    const arcR = s * 0.66;
+    const arcWidth = 9 + player.swing * 6;
+    const arcG = ctx.createLinearGradient(0, -arcR, 0, arcR);
+    arcG.addColorStop(0, 'rgba(255,250,220,0)');
+    arcG.addColorStop(0.5, `rgba(255,226,145,${0.24 + player.swing * 0.28})`);
+    arcG.addColorStop(1, 'rgba(141,216,255,0)');
+    ctx.strokeStyle = arcG;
+    ctx.lineWidth = arcWidth;
+    ctx.beginPath();
+    ctx.arc(0, 0, arcR, -0.92, 0.56);
+    ctx.stroke();
+    ctx.restore();
+  }
 
   // 타격 방향 가이드(전방 콘)
   ctx.save();
@@ -464,6 +496,22 @@ function draw() {
   const ox = shake ? (Math.random() * 2 - 1) * shake : 0;
   const oy = shake ? (Math.random() * 2 - 1) * shake : 0;
 
+  // 하강 속도선: 물리적 낙하 체감 강화
+  const speedN = Math.max(0, Math.min(1, (camVel - 52) / 180));
+  if (speedN > 0.02) {
+    ctx.strokeStyle = `rgba(157, 204, 255, ${0.05 + speedN * 0.14})`;
+    ctx.lineWidth = 1 + speedN * 1.2;
+    for (let i = 0; i < 14; i++) {
+      const sx = ((i * 67 + t * 120) % (W + 80)) - 40;
+      const sy = ((i * 103 + t * 340) % (H + 120)) - 60;
+      const len = 10 + speedN * 26;
+      ctx.beginPath();
+      ctx.moveTo(sx + ox * 0.2, sy + oy * 0.2);
+      ctx.lineTo(sx + ox * 0.2, sy + len + oy * 0.2);
+      ctx.stroke();
+    }
+  }
+
   // 블록 렌더
   for (const b of blocks) {
     const y = b.y - camY + oy;
@@ -539,6 +587,14 @@ function draw() {
     ctx.fillRect(0, 0, W, H);
   }
 
+  // 착지 충격 비네트
+  if (landingPulse > 0) {
+    const lg = ctx.createRadialGradient(W * 0.5, H * 0.7, 20, W * 0.5, H * 0.7, H * 0.9);
+    lg.addColorStop(0, `rgba(255,220,150,${landingPulse * 0.12})`);
+    lg.addColorStop(1, `rgba(0,0,0,${landingPulse * 0.22})`);
+    ctx.fillStyle = lg;
+    ctx.fillRect(0, 0, W, H);
+  }
 
   // HUD (가독성 강화)
   ctx.fillStyle = 'rgba(8,10,16,.72)';
