@@ -13,6 +13,8 @@ let baseVignette = null;
 const MAX_PARTICLES = 650;
 const PRUNE_MARGIN_ROWS = 16;
 const HIT_COOLDOWN = 0.19;
+const SWING_DURATION = 0.20;
+const SWING_IMPACT_PHASE = 0.46;
 const MAX_IMPACTS = 14;
 const MAX_SLASH_MARKS = 18;
 
@@ -58,10 +60,15 @@ let landingPulse = 0;
 let comboPulse = 0;
 let fallStress = 0;
 let airRumble = 0;
+let frameMsAvg = 16.7;
 let preImpactPulse = 0;
 let groundGrip = 0;
+let groundLatch = 0;
 let headFocusPulse = 0;
 let impactFlash = 0;
+let impactStreak = 0;
+let freefallChain = 0;
+let dropSurge = 0;
 
 function initVisualCache() {
   if (!bgGradient) {
@@ -83,6 +90,8 @@ const player = {
   face: 1,
   size: BLOCK * 2.1,
   swing: 0,
+  swingPhase: 1,
+  swingHitDone: true,
   glow: 0,
   trail: [],
 };
@@ -109,8 +118,16 @@ function reset() {
   airRumble = 0;
   preImpactPulse = 0;
   groundGrip = 0;
+  groundLatch = 0;
   headFocusPulse = 0;
   impactFlash = 0;
+  impactStreak = 0;
+  freefallChain = 0;
+  dropSurge = 0;
+  frameMsAvg = 16.7;
+  player.swing = 0;
+  player.swingPhase = 1;
+  player.swingHitDone = true;
   generatedMaxRow = 259;
   for (let r = 0; r < 260; r++) addRow(r);
 }
@@ -158,6 +175,13 @@ const DEBRIS_COLORS = {
   hard: '#b88a64',
   hazard: '#ff6666',
   dust: '#c8d0df',
+};
+
+const BLOCK_COLORS = {
+  normal: '#6d7892',
+  ore: '#2bafea',
+  hard: '#8f6748',
+  hazard: '#b64040',
 };
 
 function spawnDebris(x, y, type, power = 1, opts = {}) {
@@ -220,6 +244,7 @@ function autoHit() {
   let bestDist = Infinity;
   let hitCount = 0;
   let strongestImpact = 0;
+  let blocksNeedCompact = false;
 
   for (const b of blocks) {
     const by = b.y - camY;
@@ -261,6 +286,7 @@ function autoHit() {
     spawnImpactBurst(cx, cy, b.type, power);
 
     if (b.hp <= 0) {
+      blocksNeedCompact = true;
       score += b.type === 'ore' ? 55 : b.type === 'hard' ? 18 : 10;
       player.glow = 0.12;
       shake = Math.max(shake, 7 * power);
@@ -275,7 +301,7 @@ function autoHit() {
     }
   }
 
-  compactInPlace(blocks, (b) => b.hp > 0);
+  if (blocksNeedCompact) compactInPlace(blocks, (b) => b.hp > 0);
   if (hitCount) {
     const markX = bestTarget ? bestTarget.x : head.x;
     const markY = bestTarget ? bestTarget.y : head.y;
@@ -295,6 +321,9 @@ function autoHit() {
     if (player.trail.length > 8) player.trail.shift();
     spawnSlashMark(markX, markY, head.ang, strongestImpact, markStrong);
     comboPulse = Math.min(1, comboPulse + Math.min(0.34, hitCount * 0.08));
+    impactStreak = Math.min(1, impactStreak + Math.min(0.26, hitCount * 0.07));
+    headFocusPulse = Math.min(1, headFocusPulse + 0.34 + strongestImpact * 0.24 + impactStreak * 0.14);
+    impactFlash = Math.min(1, impactFlash + 0.18 + strongestImpact * 0.22 + impactStreak * 0.08);
   }
 }
 function update(dt) {
@@ -339,10 +368,26 @@ function update(dt) {
       if (Math.abs(fy) <= BLOCK * 2.8) futureSupport++;
     }
   }
-  const grounded = support >= 3;
+  // 지면 판정 히스테리시스: 프레임 단위 미세 흔들림으로 인한 착지/공중 깜빡임 억제
+  const supportN = Math.min(1, support / 4);
+  if (support >= 3) {
+    groundLatch = Math.min(1, groundLatch + simDt * (4.8 + supportN * 2.6));
+  } else {
+    const release = support <= 0 ? 4.2 : 2.7;
+    groundLatch = Math.max(0, groundLatch - simDt * release);
+  }
+  const grounded = groundLatch > 0.34;
   const dropFactor = Math.max(0, 1 - support / 5);
-  const gravity = 120 + dropFactor * 230;
-  const terminal = 84 + dropFactor * 180;
+
+  // 위→아래 중력 체감 강화: 공중 체류가 길수록 하강이 더 강해지는 연쇄 가속
+  if (!grounded) {
+    freefallChain = Math.min(1, freefallChain + simDt * (1.2 + dropFactor * 0.9));
+  } else {
+    freefallChain = Math.max(0, freefallChain - simDt * 5.2);
+  }
+
+  const gravity = 142 + dropFactor * 292 + freefallChain * 88;
+  const terminal = 96 + dropFactor * 212 + freefallChain * 58;
   const preBrakeVel = Math.min(terminal, camVel + gravity * simDt);
   camVel = preBrakeVel;
 
@@ -355,17 +400,19 @@ function update(dt) {
 
   // 공중 낙하 누적 압력(빠르게 떨어질수록 불안정 + 착지 강도 누적)
   if (!grounded) {
-    const stressGain = Math.max(0, (camVel - 58) / 185);
-    fallStress = Math.min(1, fallStress + stressGain * simDt * 2.4);
-    airRumble = Math.max(airRumble, stressGain * 0.85);
+    const stressGain = Math.max(0, (camVel - 54) / 172);
+    fallStress = Math.min(1, fallStress + stressGain * simDt * 2.8);
+    airRumble = Math.max(airRumble, stressGain * 0.9);
+    dropSurge = Math.min(1, dropSurge + simDt * (0.9 + stressGain * 1.8));
   }
 
   // 지지층을 밟고 있을 때는 낙하속도를 추가 감쇠해 “붙잡히는” 느낌 강화
   if (grounded) {
     groundGrip = Math.min(1, groundGrip + simDt * 4.8);
-    const brake = 150 + Math.min(70, support * 12);
-    const gripBrake = brake * (1 + groundGrip * 0.22);
-    camVel = Math.max(26, camVel - gripBrake * simDt);
+    const brake = 156 + Math.min(82, support * 13);
+    const gripBrake = brake * (1 + groundGrip * 0.24);
+    camVel = Math.max(25, camVel - gripBrake * simDt);
+    dropSurge = Math.max(0, dropSurge - simDt * 4.6);
   } else {
     groundGrip = Math.max(0, groundGrip - simDt * 5.5);
   }
@@ -390,7 +437,8 @@ function update(dt) {
   wasGrounded = grounded;
 
   camBob = Math.max(0, camBob - simDt * 60);
-  camY += (camVel - camBob) * simDt;
+  const surgeBoost = !grounded ? (1 + dropSurge * 0.16) : 1;
+  camY += (camVel * surgeBoost - camBob) * simDt;
 
   // 블록 스트리밍 (행 인덱스 캐시로 전체 스캔 제거)
   const maxRow = Math.floor((camY + H * 2) / BLOCK);
@@ -407,6 +455,9 @@ function update(dt) {
   landingPulse = Math.max(0, landingPulse - simDt * 3.2);
   preImpactPulse = Math.max(0, preImpactPulse - simDt * 4.4);
   comboPulse = Math.max(0, comboPulse - simDt * 1.8);
+  impactStreak = Math.max(0, impactStreak - simDt * 1.35);
+  headFocusPulse = Math.max(0, headFocusPulse - simDt * 3.4);
+  impactFlash = Math.max(0, impactFlash - simDt * 7.6);
   fallStress = Math.max(0, fallStress - simDt * (grounded ? 1.9 : 0.35));
   airRumble = Math.max(0, airRumble - simDt * 2.4);
   decayAndCompactInPlace(player.trail, simDt);
@@ -455,14 +506,23 @@ function drawPickaxe(ox, oy) {
   const ty = y + Math.sin(ang) * len * 0.48;
 
   // 곡괭이 실루엣 대비용 백플레이트
-  const backR = s * (0.58 + player.swing * 0.14);
+  const backR = s * (0.58 + player.swing * 0.14 + headFocusPulse * 0.09);
   const backG = ctx.createRadialGradient(x, y, 6, x, y, backR);
-  backG.addColorStop(0, 'rgba(5,8,16,0.55)');
+  backG.addColorStop(0, 'rgba(5,8,16,0.60)');
   backG.addColorStop(1, 'rgba(5,8,16,0)');
   ctx.fillStyle = backG;
   ctx.beginPath();
   ctx.arc(x, y, backR, 0, Math.PI * 2);
   ctx.fill();
+
+  // 타격 직후 실루엣 링으로 헤드 위치를 더 선명하게 강조
+  if (headFocusPulse > 0.01) {
+    ctx.strokeStyle = `rgba(10,16,28,${0.18 + headFocusPulse * 0.35})`;
+    ctx.lineWidth = 10 + headFocusPulse * 7;
+    ctx.beginPath();
+    ctx.arc(x, y, s * (0.58 + headFocusPulse * 0.28), 0, Math.PI * 2);
+    ctx.stroke();
+  }
 
   // 스윙 궤적(타격 타이밍 가시화)
   if (player.swing > 0.02) {
@@ -612,6 +672,19 @@ function drawPickaxe(ox, oy) {
   ctx.lineTo(s * 0.42, -s * 0.03);
   ctx.stroke();
 
+  // 헤드 실루엣 외곽광: 블록 배경 위에서도 형태가 안 묻히도록 보정
+  if (headFocusPulse > 0.01) {
+    ctx.strokeStyle = `rgba(255,233,160,${0.20 + headFocusPulse * 0.55})`;
+    ctx.lineWidth = 2.5 + headFocusPulse * 2.5;
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.54, -s * 0.03);
+    ctx.lineTo(-s * 0.45, -s * 0.20);
+    ctx.lineTo(-s * 0.06, -s * 0.13);
+    ctx.moveTo(s * 0.10, -s * 0.10);
+    ctx.lineTo(s * 0.50, -s * 0.06);
+    ctx.stroke();
+  }
+
   ctx.restore();
 }
 function draw() {
@@ -632,7 +705,7 @@ function draw() {
   const oy = shake ? (Math.random() * 2 - 1) * shake : 0;
 
   // 하강 속도선: 물리적 낙하 체감 강화
-  const speedN = Math.max(0, Math.min(1, (camVel - 52) / 180));
+  const speedN = Math.max(0, Math.min(1, (camVel - 48) / 170 + freefallChain * 0.22));
   if (speedN > 0.02) {
     ctx.strokeStyle = `rgba(157, 204, 255, ${0.05 + speedN * 0.14})`;
     ctx.lineWidth = 1 + speedN * 1.2;
@@ -645,6 +718,17 @@ function draw() {
       ctx.lineTo(sx + ox * 0.2, sy + len + oy * 0.2);
       ctx.stroke();
     }
+
+    // 급강하 구간에서 중심부 수직 러시를 추가해 아래로 빨려드는 감각 강화
+    if (dropSurge > 0.18) {
+      const rushA = 0.03 + dropSurge * 0.10;
+      const rushG = ctx.createLinearGradient(W * 0.5, 0, W * 0.5, H);
+      rushG.addColorStop(0, `rgba(125,190,255,0)`);
+      rushG.addColorStop(0.4, `rgba(125,190,255,${rushA})`);
+      rushG.addColorStop(1, `rgba(125,190,255,0)`);
+      ctx.fillStyle = rushG;
+      ctx.fillRect(W * 0.2, 0, W * 0.6, H);
+    }
   }
 
   // 고속 낙하 누적 스트레스: 화면 가장자리 압박 비네트
@@ -654,6 +738,14 @@ function draw() {
     stressG.addColorStop(1, `rgba(125,170,255,${fallStress * 0.16})`);
     ctx.fillStyle = stressG;
     ctx.fillRect(0, 0, W, H);
+  }
+
+  // 착지 직전 긴장감(예측 충돌 펄스)
+  if (preImpactPulse > 0.02) {
+    const edgeA = preImpactPulse * (0.16 + Math.sin(t * 34) * 0.03);
+    ctx.strokeStyle = `rgba(150, 210, 255, ${edgeA})`;
+    ctx.lineWidth = 2 + preImpactPulse * 4;
+    ctx.strokeRect(5, 5, W - 10, H - 10);
   }
 
   // 블록 렌더
@@ -792,6 +884,13 @@ function draw() {
     ctx.fillRect(0, 0, W, H);
   }
 
+  // 타격 직후 미세 플래시: 손맛 전달 강화(짧고 약하게)
+  if (impactFlash > 0.01) {
+    const flashN = Math.min(1, impactFlash);
+    ctx.fillStyle = `rgba(255, 238, 186, ${flashN * 0.10})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
   // 착지 충격 비네트
   if (landingPulse > 0) {
     const lg = ctx.createRadialGradient(W * 0.5, H * 0.7, 20, W * 0.5, H * 0.7, H * 0.9);
@@ -814,7 +913,7 @@ function draw() {
 
   // HUD (가독성 강화)
   ctx.fillStyle = 'rgba(8,10,16,.72)';
-  ctx.fillRect(12, 12, W - 24, 74);
+  ctx.fillRect(12, 12, W - 24, 92);
   ctx.fillStyle = '#eaf0ff';
   ctx.font = 'bold 20px system-ui';
   ctx.fillText(`SCORE ${score}`, 24, 38);
@@ -825,12 +924,18 @@ function draw() {
   ctx.fillText(`DEPTH ${depth}m`, 24, 60);
   ctx.fillStyle = '#9fb0d8';
   ctx.fillText('AUTO IDLE SHOWCASE', W - 182, 60);
+
+  const fps = Math.round(1000 / Math.max(1, frameMsAvg));
+  ctx.fillStyle = '#86f0c5';
+  ctx.fillText(`PERF ${fps}fps · ${blocks.length} blk · ${particles.length} pt`, 24, 80);
 }
 
 let last = performance.now();
 function loop(now) {
-  const dt = Math.min(0.033, (now - last) / 1000);
+  const rawDt = (now - last) / 1000;
+  const dt = Math.min(0.033, rawDt);
   last = now;
+  frameMsAvg = frameMsAvg * 0.92 + rawDt * 1000 * 0.08;
   update(dt);
   draw();
   requestAnimationFrame(loop);
