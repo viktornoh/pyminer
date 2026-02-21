@@ -7,12 +7,19 @@ const BLOCK = 36;
 const TOP_CLEAR_ROWS = 7;
 const cols = Math.floor(W / BLOCK);
 
+const MAX_PARTICLES = 650;
+const PRUNE_MARGIN_ROWS = 16;
+const HIT_COOLDOWN = 0.19;
+
 let blocks = [];
 let particles = [];
 let score = 0;
 let camY = 0;
+let camVel = 30;
+let camBob = 0;
 let shake = 0;
 let t = 0;
+let hitCooldown = 0;
 
 const player = {
   x: W * 0.5,
@@ -29,7 +36,10 @@ function reset() {
   particles = [];
   score = 0;
   camY = 0;
+  camVel = 30;
+  camBob = 0;
   t = 0;
+  hitCooldown = 0;
   for (let r = 0; r < 260; r++) addRow(r);
 }
 
@@ -77,11 +87,14 @@ function spawnDebris(x, y, type, power = 1) {
     hazard: '#ff6666',
   };
   const color = palette[type] || '#ffffff';
-  const n = 8 + Math.floor(power * 4);
+  const n = 7 + Math.floor(power * 4);
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2;
     const s = (80 + Math.random() * 220) * (0.8 + power * 0.4);
     particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.25 + Math.random() * 0.4, color });
+  }
+  if (particles.length > MAX_PARTICLES) {
+    particles.splice(0, particles.length - MAX_PARTICLES);
   }
 }
 
@@ -90,9 +103,14 @@ function autoHit() {
   const radius = BLOCK * 0.85;
   let hitCount = 0;
 
+  const minY = player.y - radius - BLOCK;
+  const maxY = player.y + radius + BLOCK;
+  const minX = head.x - radius - BLOCK;
+  const maxX = head.x + radius + BLOCK;
+
   for (const b of blocks) {
     const by = b.y - camY;
-    if (by < -BLOCK || by > H + BLOCK) continue;
+    if (by < minY || by > maxY || b.x < minX || b.x > maxX) continue;
 
     const cx = b.x + b.w * 0.5;
     const cy = by + b.h * 0.5;
@@ -103,6 +121,7 @@ function autoHit() {
     if (b.type === 'hazard') {
       b.flash = 0.18;
       spawnDebris(cx, cy, 'hazard', 0.9);
+      shake = Math.max(shake, 4);
       continue;
     }
 
@@ -117,6 +136,8 @@ function autoHit() {
       score += b.type === 'ore' ? 55 : b.type === 'hard' ? 18 : 10;
       player.glow = 0.12;
       shake = Math.max(shake, 7 * power);
+      camBob += 26 * power;
+      camVel += 4 * power;
     }
   }
 
@@ -134,21 +155,29 @@ function update(dt) {
   player.x = W * 0.5 + Math.sin(t * 0.85) * (W * 0.28);
   player.face = Math.cos(t * 0.85) >= 0 ? 1 : -1;
 
-  // 자동 스윙 리듬
-  player.swing = Math.max(0, player.swing - dt * 5.4);
-  if (Math.sin(t * 3.8) > 0.95 && player.swing < 0.1) {
+  // 자동 스윙 리듬 (쿨다운 기반으로 일정한 타격감)
+  player.swing = Math.max(0, player.swing - dt * 5.8);
+  hitCooldown -= dt;
+  if (hitCooldown <= 0) {
+    hitCooldown = HIT_COOLDOWN + Math.random() * 0.02;
     player.swing = 1;
     autoHit();
   }
 
-  // 하강은 느리게(감상용)
-  camY += dt * 30;
+  // 카메라: 기본 하강 + 타격 반동
+  camVel = Math.max(28, camVel - dt * 13);
+  camBob = Math.max(0, camBob - dt * 60);
+  camY += (camVel - camBob) * dt;
 
   // 블록 스트리밍
   const maxRow = Math.floor((camY + H * 2) / BLOCK);
   let curMax = 0;
   for (const b of blocks) curMax = Math.max(curMax, Math.floor(b.y / BLOCK));
   for (let r = curMax + 1; r <= maxRow; r++) addRow(r);
+
+  // 오래된 블록 정리(성능)
+  const pruneY = camY - BLOCK * PRUNE_MARGIN_ROWS;
+  blocks = blocks.filter((b) => b.y + b.h > pruneY);
 
   // VFX 업데이트
   player.glow = Math.max(0, player.glow - dt * 2.4);
@@ -315,21 +344,26 @@ function draw() {
   for (const p of particles) {
     ctx.globalAlpha = Math.max(0, p.life * 2.2);
     ctx.fillStyle = p.color;
-    ctx.fillRect(p.x + ox, p.y + oy, 3, 3);
+    const sz = p.size || 3;
+    ctx.fillRect(p.x + ox, p.y + oy, sz, sz);
   }
   ctx.globalAlpha = 1;
 
   drawPickaxe(ox, oy);
 
-  // HUD
-  ctx.fillStyle = 'rgba(8,10,16,.65)';
-  ctx.fillRect(12, 12, W - 24, 64);
+  // HUD (가독성 강화)
+  ctx.fillStyle = 'rgba(8,10,16,.72)';
+  ctx.fillRect(12, 12, W - 24, 74);
   ctx.fillStyle = '#eaf0ff';
   ctx.font = 'bold 20px system-ui';
   ctx.fillText(`SCORE ${score}`, 24, 38);
-  ctx.font = '15px system-ui';
-  ctx.fillStyle = '#a9b7da';
-  ctx.fillText('AUTO IDLE SHOWCASE', 24, 61);
+
+  const depth = Math.floor(camY / BLOCK);
+  ctx.font = '14px system-ui';
+  ctx.fillStyle = '#c5d1ef';
+  ctx.fillText(`DEPTH ${depth}m`, 24, 60);
+  ctx.fillStyle = '#9fb0d8';
+  ctx.fillText('AUTO IDLE SHOWCASE', W - 182, 60);
 }
 
 let last = performance.now();
