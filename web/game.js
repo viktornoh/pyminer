@@ -19,6 +19,9 @@ let camVel = 30;
 let camBob = 0;
 let shake = 0;
 let t = 0;
+let hitPulse = 0;
+let hazardPulse = 0;
+let lastHit = null;
 let hitCooldown = 0;
 
 const player = {
@@ -101,27 +104,30 @@ function spawnDebris(x, y, type, power = 1) {
 function autoHit() {
   const head = pickaxeHeadPos();
   const radius = BLOCK * 0.85;
+  let bestTarget = null;
+  let bestDist = Infinity;
   let hitCount = 0;
-
-  const minY = player.y - radius - BLOCK;
-  const maxY = player.y + radius + BLOCK;
-  const minX = head.x - radius - BLOCK;
-  const maxX = head.x + radius + BLOCK;
 
   for (const b of blocks) {
     const by = b.y - camY;
-    if (by < minY || by > maxY || b.x < minX || b.x > maxX) continue;
+    if (by < -BLOCK || by > H + BLOCK) continue;
 
     const cx = b.x + b.w * 0.5;
     const cy = by + b.h * 0.5;
     const d = Math.hypot(cx - head.x, cy - head.y);
     if (d > radius) continue;
 
+    if (d < bestDist) {
+      bestDist = d;
+      bestTarget = { x: cx, y: cy, type: b.type };
+    }
+
     hitCount++;
     if (b.type === 'hazard') {
       b.flash = 0.18;
       spawnDebris(cx, cy, 'hazard', 0.9);
-      shake = Math.max(shake, 4);
+      hazardPulse = 0.26;
+      shake = Math.max(shake, 6);
       continue;
     }
 
@@ -136,18 +142,22 @@ function autoHit() {
       score += b.type === 'ore' ? 55 : b.type === 'hard' ? 18 : 10;
       player.glow = 0.12;
       shake = Math.max(shake, 7 * power);
-      camBob += 26 * power;
-      camVel += 4 * power;
     }
   }
 
   blocks = blocks.filter((b) => b.hp > 0);
   if (hitCount) {
+    lastHit = {
+      x: bestTarget ? bestTarget.x : head.x,
+      y: bestTarget ? bestTarget.y : head.y,
+      life: 0.22,
+      strong: bestTarget && bestTarget.type === 'hazard' ? 1 : 0,
+    };
+    hitPulse = 0.18;
     player.trail.push({ x: head.x, y: head.y, life: 0.12 });
     if (player.trail.length > 8) player.trail.shift();
   }
 }
-
 function update(dt) {
   t += dt;
 
@@ -181,12 +191,19 @@ function update(dt) {
 
   // VFX 업데이트
   player.glow = Math.max(0, player.glow - dt * 2.4);
+  hitPulse = Math.max(0, hitPulse - dt * 4.5);
+  hazardPulse = Math.max(0, hazardPulse - dt * 3.5);
   for (const tr of player.trail) tr.life -= dt;
   player.trail = player.trail.filter((tr) => tr.life > 0);
 
   for (const b of blocks) {
     b.flash = Math.max(0, b.flash - dt * 2.8);
     b.blink = Math.max(0, b.blink - dt);
+  }
+
+  if (lastHit) {
+    lastHit.life -= dt;
+    if (lastHit.life <= 0) lastHit = null;
   }
 
   for (const p of particles) {
@@ -204,13 +221,31 @@ function drawPickaxe(ox, oy) {
   const s = player.size;
   const x = player.x + ox;
   const y = player.y + oy;
-  const len = s * 0.82;
+  const len = s * 0.84;
   const ang = (player.face === 1 ? -0.30 : Math.PI + 0.30) + player.swing * 0.72 * player.face;
 
   const hx = x - Math.cos(ang) * len * 0.48;
   const hy = y - Math.sin(ang) * len * 0.48;
   const tx = x + Math.cos(ang) * len * 0.48;
   const ty = y + Math.sin(ang) * len * 0.48;
+
+  // 타격 방향 가이드(전방 콘)
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(ang);
+  const coneLen = s * 0.92;
+  const coneW = s * 0.35;
+  const coneG = ctx.createLinearGradient(0, 0, coneLen, 0);
+  coneG.addColorStop(0, 'rgba(141,216,255,0)');
+  coneG.addColorStop(1, 'rgba(141,216,255,0.32)');
+  ctx.fillStyle = coneG;
+  ctx.beginPath();
+  ctx.moveTo(s * 0.12, -coneW * 0.45);
+  ctx.lineTo(coneLen, 0);
+  ctx.lineTo(s * 0.12, coneW * 0.45);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
 
   // 잔상(헤드 끝 위주)
   for (let i = player.trail.length - 1; i >= 0; i--) {
@@ -223,10 +258,18 @@ function drawPickaxe(ox, oy) {
   }
   ctx.globalAlpha = 1;
 
-  // 손잡이
-  ctx.strokeStyle = '#8a5a34';
-  ctx.lineWidth = 11;
+  // 손잡이 외곽(실루엣 강화)
+  ctx.strokeStyle = '#1b110b';
+  ctx.lineWidth = 15;
   ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(hx, hy);
+  ctx.lineTo(tx, ty);
+  ctx.stroke();
+
+  // 손잡이 본체
+  ctx.strokeStyle = '#8a5a34';
+  ctx.lineWidth = 10;
   ctx.beginPath();
   ctx.moveTo(hx, hy);
   ctx.lineTo(tx, ty);
@@ -236,10 +279,11 @@ function drawPickaxe(ox, oy) {
   const headY = y + Math.sin(ang) * len * 0.42;
 
   // 헤드 글로우
-  if (player.glow > 0) {
-    const r = 20 + player.glow * 18;
+  if (player.glow > 0 || hitPulse > 0) {
+    const pulse = Math.max(player.glow, hitPulse * 0.8);
+    const r = 20 + pulse * 24;
     const grd = ctx.createRadialGradient(headX, headY, 2, headX, headY, r);
-    grd.addColorStop(0, 'rgba(255,240,170,0.9)');
+    grd.addColorStop(0, 'rgba(255,240,170,0.95)');
     grd.addColorStop(1, 'rgba(255,240,170,0)');
     ctx.fillStyle = grd;
     ctx.beginPath();
@@ -247,14 +291,19 @@ function drawPickaxe(ox, oy) {
     ctx.fill();
   }
 
-  // 곡괭이 헤드: T자 실루엣 + 한쪽 뾰족/한쪽 평날
+  // 곡괭이 헤드
   ctx.save();
   ctx.translate(headX, headY);
   ctx.rotate(ang);
 
+  // 헤드 외곽 실루엣
+  ctx.strokeStyle = '#0d131f';
+  ctx.lineWidth = 5;
+
   // 금속 중앙 바(손잡이 결합부)
   ctx.fillStyle = '#c2cfdd';
   ctx.fillRect(-s * 0.06, -s * 0.20, s * 0.12, s * 0.34);
+  ctx.strokeRect(-s * 0.06, -s * 0.20, s * 0.12, s * 0.34);
 
   // 좌측 뾰족 픽
   ctx.fillStyle = '#dce7f2';
@@ -265,6 +314,7 @@ function drawPickaxe(ox, oy) {
   ctx.lineTo(-s * 0.08, s * 0.02);
   ctx.closePath();
   ctx.fill();
+  ctx.stroke();
 
   // 우측 평날(애드즈)
   ctx.beginPath();
@@ -272,6 +322,16 @@ function drawPickaxe(ox, oy) {
   ctx.lineTo(s * 0.50, -s * 0.08);
   ctx.lineTo(s * 0.46, s * 0.08);
   ctx.lineTo(s * 0.04, s * 0.10);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // 전방 포인터(방향성 강조)
+  ctx.fillStyle = '#ffd887';
+  ctx.beginPath();
+  ctx.moveTo(s * 0.55, 0);
+  ctx.lineTo(s * 0.70, -s * 0.05);
+  ctx.lineTo(s * 0.70, s * 0.05);
   ctx.closePath();
   ctx.fill();
 
@@ -287,7 +347,6 @@ function drawPickaxe(ox, oy) {
 
   ctx.restore();
 }
-
 function draw() {
   // 배경
   const g = ctx.createLinearGradient(0, 0, 0, H);
@@ -349,7 +408,40 @@ function draw() {
   }
   ctx.globalAlpha = 1;
 
+
+  // 피격 피드백(임팩트 링 + 스파크)
+  if (lastHit) {
+    const a = Math.min(1, lastHit.life * 5);
+    const r = 12 + (1 - a) * 22;
+    ctx.globalAlpha = a;
+    ctx.strokeStyle = lastHit.strong ? '#ff7d7d' : '#ffd887';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(lastHit.x + ox, lastHit.y + oy, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    for (let i = 0; i < 4; i++) {
+      const ang = (Math.PI * 2 * i) / 4 + t * 8;
+      const sx = lastHit.x + ox + Math.cos(ang) * (r - 4);
+      const sy = lastHit.y + oy + Math.sin(ang) * (r - 4);
+      const ex = lastHit.x + ox + Math.cos(ang) * (r + 8);
+      const ey = lastHit.y + oy + Math.sin(ang) * (r + 8);
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(ex, ey);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
   drawPickaxe(ox, oy);
+
+  // 피격 경고(해저드)
+  if (hazardPulse > 0) {
+    ctx.fillStyle = `rgba(255, 82, 82, ${hazardPulse * 0.28})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
 
   // HUD (가독성 강화)
   ctx.fillStyle = 'rgba(8,10,16,.72)';
