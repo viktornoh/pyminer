@@ -17,6 +17,7 @@ const SWING_DURATION = 0.20;
 const SWING_IMPACT_PHASE = 0.46;
 const MAX_IMPACTS = 14;
 const MAX_SLASH_MARKS = 18;
+const MAX_HIT_TICKS = 16;
 
 let blocks = [];
 let particles = [];
@@ -28,6 +29,10 @@ function compactInPlace(arr, keep) {
     if (keep(item)) arr[w++] = item;
   }
   arr.length = w;
+}
+
+function clamp01(v) {
+  return Math.max(0, Math.min(1, v));
 }
 
 function decayAndCompactInPlace(arr, dt, lifeKey = 'life') {
@@ -50,6 +55,7 @@ let hazardPulse = 0;
 let lastHit = null;
 let impactBursts = [];
 let slashMarks = [];
+let hitTicks = [];
 let hitCooldown = 0;
 let hitstop = 0;
 let recoilX = 0;
@@ -72,6 +78,8 @@ let freefallChain = 0;
 let dropSurge = 0;
 let collisionSpring = 0;
 let collisionSpringVel = 0;
+let landingHitstop = 0;
+let descentSway = 0;
 
 function initVisualCache() {
   if (!bgGradient) {
@@ -130,6 +138,8 @@ function reset() {
   dropSurge = 0;
   collisionSpring = 0;
   collisionSpringVel = 0;
+  landingHitstop = 0;
+  descentSway = 0;
   frameMsAvg = 16.7;
   player.swing = 0;
   player.swingPhase = 1;
@@ -215,11 +225,12 @@ function spawnDebris(x, y, type, power = 1, opts = {}) {
 }
 
 function spawnImpactBurst(x, y, type, power = 1) {
+  const life = 0.22 + Math.min(0.12, power * 0.08);
   impactBursts.push({
     x,
     y,
-    life: 0.22 + Math.min(0.12, power * 0.08),
-    maxLife: 0.22 + Math.min(0.12, power * 0.08),
+    life,
+    maxLife: life,
     power,
     strong: type === 'hazard' ? 1 : type === 'ore' ? 0.6 : 0,
   });
@@ -351,8 +362,10 @@ function swingValueFromPhase(phase) {
 
 function update(dt) {
   t += dt;
-  const simDt = hitstop > 0 ? dt * 0.14 : dt;
+  const activeHitstop = Math.max(hitstop, landingHitstop);
+  const simDt = activeHitstop > 0 ? dt * (landingHitstop > hitstop ? 0.2 : 0.14) : dt;
   hitstop = Math.max(0, hitstop - dt);
+  landingHitstop = Math.max(0, landingHitstop - dt);
 
   // 프레임 내에서 반복되는 감쇠 계산 캐시(파티클 수가 많을 때 비용 절감)
   const recoilDamping = Math.pow(0.0008, simDt);
@@ -467,6 +480,12 @@ function update(dt) {
       spread: Math.PI * 0.7,
       downBoost: 20,
     });
+
+    // 강착지일수록 짧은 화이트아웃 + 히트스톱으로 충돌 질량감 강화
+    if (charged > 0.45) {
+      impactFlash = Math.max(impactFlash, 0.08 + charged * 0.24);
+      hitstop = Math.max(hitstop, 0.008 + charged * 0.012);
+    }
     fallStress *= 0.35;
   }
   wasGrounded = grounded;
@@ -1030,6 +1049,20 @@ function draw() {
   const fps = Math.round(1000 / Math.max(1, frameMsAvg));
   ctx.fillStyle = '#86f0c5';
   ctx.fillText(`PERF ${fps}fps · ${blocks.length} blk · ${particles.length} pt`, 24, 80);
+
+  // 낙하 위험도 바: 물리 상태 가시화(플레이 감각 + 디버그 가독성)
+  const danger = Math.max(fallStress, dropSurge * 0.85);
+  const barW = 170;
+  const barX = W - 208;
+  const barY = 74;
+  ctx.fillStyle = 'rgba(10,14,24,0.9)';
+  ctx.fillRect(barX - 8, barY - 14, barW + 16, 24);
+  ctx.fillStyle = 'rgba(70,84,110,0.8)';
+  ctx.fillRect(barX, barY - 8, barW, 8);
+  ctx.fillStyle = danger > 0.68 ? '#ff7a7a' : '#ffd27a';
+  ctx.fillRect(barX, barY - 8, barW * danger, 8);
+  ctx.fillStyle = '#c5d1ef';
+  ctx.fillText('FALL LOAD', barX, barY - 16);
 }
 
 let last = performance.now();
