@@ -67,10 +67,12 @@ class Game:
         self.generate_rows(0, cfg["SPAWN_ROWS_AHEAD"])
 
         self.command_queue: list[str] = []
+        self.recent_commands: list[str] = []
         self.last_command_at = 0.0
         self.last_queue_pop = 0.0
         self.last_skill = 0.0
         self.active_skill_name = "-"
+        self.sponsor_card_until = 0.0
 
         self.shake_power = 0.0
         self.hit_flash = 0.0
@@ -120,6 +122,7 @@ class Game:
             return
 
         cmd = self.command_queue.pop(0)
+        self.recent_commands = ([cmd] + self.recent_commands)[:4]
         self.last_queue_pop = now
         if cmd == "tnt":
             self.trigger_tnt()
@@ -163,6 +166,7 @@ class Game:
         self.active_skill_name = name
         self.effects[effect] = now + 5
         self.last_skill = now
+        self.sponsor_card_until = now + 1.6
 
     def update_effects(self):
         now = time.time()
@@ -374,8 +378,8 @@ class Game:
 
         lines = [
             f"SCORE {self.score}",
-            f"DEPTH {self.depth}m   HP {'♥' * max(0, self.hp)}",
-            f"QUEUE {', '.join(self.command_queue[:3]) or '-'}",
+            f"TIME {remain:03d}s   DEPTH {self.depth}m   HP {'♥' * max(0, self.hp)}",
+            f"CHAT {', '.join(self.recent_commands) or '-'}",
             f"SKILL {self.active_skill_name}",
         ]
         y = 18
@@ -387,6 +391,18 @@ class Game:
         pygame.draw.rect(self.screen, (55, 60, 75), (20, self.h - 28, self.w - 40, 10), border_radius=5)
         pygame.draw.rect(self.screen, (80, 220, 140), (20, self.h - 28, int((self.w - 40) * ratio), 10), border_radius=5)
         self.screen.blit(self.font_small.render("A/D move · 1~5 commands", True, (220, 220, 230)), (20, self.h - 52))
+
+        if time.time() < self.sponsor_card_until:
+            card_w, card_h = self.w - 120, 72
+            card_x = (self.w - card_w) // 2
+            card_y = 130
+            card = pygame.Surface((card_w, card_h), pygame.SRCALPHA)
+            card.fill((28, 34, 56, 220))
+            self.screen.blit(card, (card_x, card_y))
+            title = self.font_small.render("SPONSOR SKILL ACTIVATED", True, (145, 205, 255))
+            name = self.font.render(self.active_skill_name, True, (255, 255, 255))
+            self.screen.blit(title, (card_x + 16, card_y + 10))
+            self.screen.blit(name, (card_x + 16, card_y + 30))
 
         if self.game_over or remain <= 0:
             txt = "GAME OVER" if self.game_over else "ROUND END"
