@@ -13,6 +13,8 @@ let baseVignette = null;
 const MAX_PARTICLES = 650;
 const PRUNE_MARGIN_ROWS = 16;
 const HIT_COOLDOWN = 0.19;
+const SWING_DURATION = 0.20;
+const SWING_IMPACT_PHASE = 0.46;
 const MAX_IMPACTS = 14;
 const MAX_SLASH_MARKS = 18;
 
@@ -67,6 +69,8 @@ let impactFlash = 0;
 let impactStreak = 0;
 let freefallChain = 0;
 let dropSurge = 0;
+let collisionSpring = 0;
+let collisionSpringVel = 0;
 
 function initVisualCache() {
   if (!bgGradient) {
@@ -88,6 +92,8 @@ const player = {
   face: 1,
   size: BLOCK * 2.1,
   swing: 0,
+  swingPhase: 1,
+  swingHitDone: true,
   glow: 0,
   trail: [],
 };
@@ -120,6 +126,8 @@ function reset() {
   impactStreak = 0;
   freefallChain = 0;
   dropSurge = 0;
+  collisionSpring = 0;
+  collisionSpringVel = 0;
   frameMsAvg = 16.7;
   player.swing = 0;
   player.swingPhase = 1;
@@ -155,9 +163,9 @@ function addRow(r) {
 }
 
 function pickaxeHeadPos() {
-  const reach = player.size * 0.58;
+  const reach = player.size * (0.56 + Math.max(0, player.swing) * 0.05);
   const base = player.face === 1 ? -0.48 : Math.PI + 0.48;
-  const ang = base + player.swing * 1.15 * player.face;
+  const ang = base + player.swing * 1.22 * player.face;
   return {
     x: player.x + Math.cos(ang) * reach,
     y: player.y + Math.sin(ang) * reach,
@@ -445,6 +453,12 @@ function update(dt) {
     landingPulse = Math.max(landingPulse, 0.28 + charged * 0.16);
     recoilY += 1.5 + charged * 3.8;
     comboPulse = Math.min(1, comboPulse + charged * 0.4);
+
+    // 착지 순간 카메라-스프링 반동: 눌림 -> 되튐을 짧게 보여 충돌 질량감 강화
+    const impactImpulse = 12 + charged * 18 + Math.max(0, preBrakeVel - 42) * 0.05;
+    collisionSpringVel += impactImpulse;
+    collisionSpring -= 1.2 + charged * 1.8;
+
     spawnDebris(player.x, H * 0.66, 'dust', 0.78 + charged * 0.7, {
       baseAngle: Math.PI * 0.5,
       spread: Math.PI * 0.7,
@@ -453,6 +467,14 @@ function update(dt) {
     fallStress *= 0.35;
   }
   wasGrounded = grounded;
+
+  // 1차 감쇠 스프링으로 착지 후 미세 흔들림(과한 랜덤 쉐이크 대체 보강)
+  collisionSpringVel += (-collisionSpring * 158 - collisionSpringVel * 22) * simDt;
+  collisionSpring += collisionSpringVel * simDt;
+  if (Math.abs(collisionSpring) < 0.02 && Math.abs(collisionSpringVel) < 0.05) {
+    collisionSpring = 0;
+    collisionSpringVel = 0;
+  }
 
   camBob = Math.max(0, camBob - simDt * 60);
   const surgeBoost = !grounded ? (1 + dropSurge * 0.16) : 1;
@@ -515,8 +537,8 @@ function drawPickaxe(ox, oy) {
   const s = player.size;
   const x = player.x + ox + recoilX;
   const y = player.y + oy + recoilY;
-  const len = s * 0.84;
-  const ang = (player.face === 1 ? -0.30 : Math.PI + 0.30) + player.swing * 0.72 * player.face;
+  const len = s * (0.82 + Math.max(0, player.swing) * 0.06);
+  const ang = (player.face === 1 ? -0.30 : Math.PI + 0.30) + player.swing * 0.80 * player.face;
 
   const hx = x - Math.cos(ang) * len * 0.48;
   const hy = y - Math.sin(ang) * len * 0.48;
@@ -591,8 +613,9 @@ function drawPickaxe(ox, oy) {
   ctx.globalAlpha = 1;
 
   // 손잡이 외곽(실루엣 강화)
-  ctx.strokeStyle = '#1b110b';
-  ctx.lineWidth = 15 + comboPulse * 2.2;
+  const swingEnergy = Math.max(0, player.swing);
+  ctx.strokeStyle = '#140d09';
+  ctx.lineWidth = 15.5 + comboPulse * 2.2 + swingEnergy * 1.8;
   ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.moveTo(hx, hy);
@@ -652,8 +675,8 @@ function drawPickaxe(ox, oy) {
   ctx.shadowOffsetY = 3;
 
   // 헤드 외곽 실루엣
-  ctx.strokeStyle = '#0d131f';
-  ctx.lineWidth = 5;
+  ctx.strokeStyle = '#0b111c';
+  ctx.lineWidth = 5.4 + swingEnergy * 1.3;
 
   // 금속 중앙 바(손잡이 결합부)
   ctx.fillStyle = '#c2cfdd';
@@ -730,7 +753,8 @@ function draw() {
   }
 
   const ox = shake ? (Math.random() * 2 - 1) * shake : 0;
-  const oy = shake ? (Math.random() * 2 - 1) * shake : 0;
+  const springKick = collisionSpring * 0.9;
+  const oy = (shake ? (Math.random() * 2 - 1) * shake : 0) + springKick;
 
   // 하강 속도선: 물리적 낙하 체감 강화
   const speedN = Math.max(0, Math.min(1, (camVel - 48) / 170 + freefallChain * 0.22));
@@ -884,6 +908,21 @@ function draw() {
       ctx.lineTo(ex, ey);
     }
     ctx.stroke();
+
+    // 별형 코어 스파크: "맞았다"는 중심 타점을 더 강하게 고정
+    ctx.globalAlpha = 0.44 * lifeN;
+    ctx.fillStyle = `rgba(${hitColor}, 0.9)`;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const ang = (Math.PI * 2 * i) / 8 + t * 5.5;
+      const r = i % 2 === 0 ? 3 + ib.power * 2.8 : 1.3 + ib.power * 0.9;
+      const px = ib.x + ox + Math.cos(ang) * r;
+      const py = ib.y + oy + Math.sin(ang) * r;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
   }
   ctx.globalAlpha = 1;
 
@@ -916,6 +955,15 @@ function draw() {
     ctx.fillRect(0, 0, W, H);
   }
 
+  // 연속 타격 누적 시 냉색 림 비네트(타격 리듬 가시화)
+  if (impactStreak > 0.04) {
+    const rg = ctx.createRadialGradient(W * 0.5, H * 0.48, H * 0.18, W * 0.5, H * 0.5, H * 0.9);
+    rg.addColorStop(0, 'rgba(255,255,255,0)');
+    rg.addColorStop(1, `rgba(120,210,255,${impactStreak * 0.16})`);
+    ctx.fillStyle = rg;
+    ctx.fillRect(0, 0, W, H);
+  }
+
   // 착지 충격 비네트
   if (landingPulse > 0) {
     const lg = ctx.createRadialGradient(W * 0.5, H * 0.7, 20, W * 0.5, H * 0.7, H * 0.9);
@@ -923,6 +971,20 @@ function draw() {
     lg.addColorStop(1, `rgba(0,0,0,${landingPulse * 0.22})`);
     ctx.fillStyle = lg;
     ctx.fillRect(0, 0, W, H);
+
+    // 착지 충돌 링: 바닥에서 가로로 퍼지는 압력파를 추가해 충돌 체감 강화
+    const pulseN = Math.min(1, landingPulse * 2.6);
+    ctx.strokeStyle = `rgba(255, 214, 150, ${0.18 * pulseN})`;
+    ctx.lineWidth = 2 + pulseN * 2.6;
+    ctx.beginPath();
+    ctx.ellipse(player.x + ox, H * 0.66 + oy, 34 + pulseN * 84, 8 + pulseN * 20, 0, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = `rgba(150, 205, 255, ${0.14 * pulseN})`;
+    ctx.lineWidth = 1.5 + pulseN * 2;
+    ctx.beginPath();
+    ctx.ellipse(player.x + ox, H * 0.66 + oy, 18 + pulseN * 52, 5 + pulseN * 14, 0, 0, Math.PI * 2);
+    ctx.stroke();
   }
 
   // 연타 성공 시 화면 가장자리 미세 펄스
