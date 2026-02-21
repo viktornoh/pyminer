@@ -10,9 +10,19 @@ const cols = Math.floor(W / BLOCK);
 const MAX_PARTICLES = 650;
 const PRUNE_MARGIN_ROWS = 16;
 const HIT_COOLDOWN = 0.19;
+const MAX_IMPACTS = 14;
 
 let blocks = [];
 let particles = [];
+
+function compactInPlace(arr, keep) {
+  let w = 0;
+  for (let r = 0; r < arr.length; r++) {
+    const item = arr[r];
+    if (keep(item)) arr[w++] = item;
+  }
+  arr.length = w;
+}
 let score = 0;
 let camY = 0;
 let camVel = 30;
@@ -22,10 +32,15 @@ let t = 0;
 let hitPulse = 0;
 let hazardPulse = 0;
 let lastHit = null;
+let impactBursts = [];
 let hitCooldown = 0;
 let hitstop = 0;
 let recoilX = 0;
 let recoilY = 0;
+let wasGrounded = false;
+let generatedMaxRow = 0;
+let prevSupport = 0;
+let landingPulse = 0;
 
 const player = {
   x: W * 0.5,
@@ -45,14 +60,19 @@ function reset() {
   camVel = 30;
   camBob = 0;
   t = 0;
+  impactBursts = [];
   hitCooldown = 0;
   hitstop = 0;
   recoilX = 0;
   recoilY = 0;
+  prevSupport = 0;
+  landingPulse = 0;
+  generatedMaxRow = 259;
   for (let r = 0; r < 260; r++) addRow(r);
 }
 
 function addRow(r) {
+  generatedMaxRow = Math.max(generatedMaxRow, r);
   for (let c = 0; c < cols; c++) {
     if (r < TOP_CLEAR_ROWS) continue;
     if (Math.random() < 0.15) continue;
@@ -118,6 +138,20 @@ function spawnDebris(x, y, type, power = 1, opts = {}) {
   }
 }
 
+function spawnImpactBurst(x, y, type, power = 1) {
+  impactBursts.push({
+    x,
+    y,
+    life: 0.22 + Math.min(0.12, power * 0.08),
+    maxLife: 0.22 + Math.min(0.12, power * 0.08),
+    power,
+    strong: type === 'hazard' ? 1 : type === 'ore' ? 0.6 : 0,
+  });
+  if (impactBursts.length > MAX_IMPACTS) {
+    impactBursts.splice(0, impactBursts.length - MAX_IMPACTS);
+  }
+}
+
 function autoHit() {
   const head = pickaxeHeadPos();
   const radius = BLOCK * 0.85;
@@ -145,6 +179,7 @@ function autoHit() {
       b.flash = 0.18;
       const hitAng = Math.atan2(cy - head.y, cx - head.x);
       spawnDebris(cx, cy, 'hazard', 0.9, { baseAngle: hitAng, spread: Math.PI * 1.3, downBoost: camVel * 0.2 });
+      spawnImpactBurst(cx, cy, 'hazard', 1.05);
       hazardPulse = 0.26;
       shake = Math.max(shake, 6);
       strongestImpact = Math.max(strongestImpact, 0.8);
@@ -178,7 +213,7 @@ function autoHit() {
     }
   }
 
-  blocks = blocks.filter((b) => b.hp > 0);
+  compactInPlace(blocks, (b) => b.hp > 0);
   if (hitCount) {
     lastHit = {
       x: bestTarget ? bestTarget.x : head.x,
@@ -225,23 +260,32 @@ function update(dt) {
   const gravity = 120 + dropFactor * 230;
   const terminal = 84 + dropFactor * 180;
   camVel = Math.min(terminal, camVel + gravity * simDt);
+
+  // 지지층과 다시 맞닿을 때 짧은 착지 임팩트
+  if (support >= 3 && prevSupport <= 1 && camVel > 46) {
+    const thud = Math.min(1, (camVel - 40) / 80);
+    camBob += 14 + thud * 24;
+    shake = Math.max(shake, 3 + thud * 5);
+    landingPulse = Math.max(landingPulse, 0.26 + thud * 0.12);
+  }
+  prevSupport = support;
+
   camBob = Math.max(0, camBob - simDt * 60);
   camY += (camVel - camBob) * simDt;
 
-  // 블록 스트리밍
+  // 블록 스트리밍 (행 인덱스 캐시로 전체 스캔 제거)
   const maxRow = Math.floor((camY + H * 2) / BLOCK);
-  let curMax = 0;
-  for (const b of blocks) curMax = Math.max(curMax, Math.floor(b.y / BLOCK));
-  for (let r = curMax + 1; r <= maxRow; r++) addRow(r);
+  for (let r = generatedMaxRow + 1; r <= maxRow; r++) addRow(r);
 
   // 오래된 블록 정리(성능)
   const pruneY = camY - BLOCK * PRUNE_MARGIN_ROWS;
-  blocks = blocks.filter((b) => b.y + b.h > pruneY);
+  compactInPlace(blocks, (b) => b.y + b.h > pruneY);
 
   // VFX 업데이트
   player.glow = Math.max(0, player.glow - simDt * 2.4);
   hitPulse = Math.max(0, hitPulse - simDt * 4.5);
   hazardPulse = Math.max(0, hazardPulse - simDt * 3.5);
+  landingPulse = Math.max(0, landingPulse - simDt * 3.2);
   for (const tr of player.trail) tr.life -= simDt;
   player.trail = player.trail.filter((tr) => tr.life > 0);
 
@@ -265,7 +309,7 @@ function update(dt) {
     p.vy += 520 * simDt;
     p.vx *= Math.pow(0.22, simDt);
   }
-  particles = particles.filter((p) => p.life > 0);
+  compactInPlace(particles, (p) => p.life > 0);
 
   shake = Math.max(0, shake - simDt * 20);
 }
@@ -522,3 +566,4 @@ function loop(now) {
 
 reset();
 requestAnimationFrame(loop);
+nimationFrame(loop);
